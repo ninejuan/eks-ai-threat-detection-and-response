@@ -1,0 +1,5 @@
+# Environment metadata
+environment  = "your-env"
+project_name = "terraform-work-starter"
+region       = "ap-northeast-2"
+prefix       = "sigmoid"
