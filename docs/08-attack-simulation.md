@@ -142,10 +142,10 @@ metadata:
   name: crypto-sim-job
   namespace: attack-simulation
   labels:
-    kubesentinel.io/simulation: "true"
-    kubesentinel.io/scenario: "crypto-mining"
+    atdr.io/simulation: "true"
+    atdr.io/scenario: "crypto-mining"
   annotations:
-    kubesentinel.io/ttl: "300"
+    atdr.io/ttl: "300"
 spec:
   ttlSecondsAfterFinished: 300
   template:
@@ -225,8 +225,8 @@ metadata:
   name: priv-esc-sim
   namespace: attack-simulation
   labels:
-    kubesentinel.io/simulation: "true"
-    kubesentinel.io/scenario: "privilege-escalation"
+    atdr.io/simulation: "true"
+    atdr.io/scenario: "privilege-escalation"
 spec:
   containers:
   - name: attacker
@@ -485,8 +485,8 @@ kubectl create namespace attack-simulation
 
 # 레이블 추가 (NetworkPolicy 셀렉터용)
 kubectl label namespace attack-simulation \
-  kubesentinel.io/purpose=attack-simulation \
-  kubesentinel.io/isolation=strict
+    atdr.io/purpose=attack-simulation \
+    atdr.io/isolation=strict
 ```
 
 ### NetworkPolicy: 외부 통신 차단
@@ -545,7 +545,7 @@ spec:
 ```bash
 # 시뮬레이션 후 수동 정리 (TTL 만료 전 즉시 정리 필요 시)
 kubectl delete all -n attack-simulation \
-  -l kubesentinel.io/simulation=true
+-l atdr.io/simulation=true
 
 # 네임스페이스 전체 정리 (시뮬레이션 세션 종료 시)
 kubectl delete namespace attack-simulation
@@ -592,7 +592,7 @@ kubectl get networkpolicy -n attack-simulation
 kubectl get resourcequota -n attack-simulation
 
 # 3. ATDR 파이프라인 상태 확인
-kubectl get pods -n kubesentinel
+kubectl get pods -n atdr
 aws guardduty list-detectors --query 'DetectorIds'
 ```
 
@@ -607,8 +607,8 @@ metadata:
   name: crypto-sim-job
   namespace: attack-simulation
   labels:
-    kubesentinel.io/simulation: "true"
-    kubesentinel.io/scenario: "crypto-mining"
+    atdr.io/simulation: "true"
+    atdr.io/scenario: "crypto-mining"
 spec:
   ttlSecondsAfterFinished: 300
   template:
@@ -654,7 +654,7 @@ kubectl logs -n falco -l app=falco --since=5m | grep -i "miner\|stratum\|crypto"
 
 # SQS 큐에서 이벤트 수신 확인
 aws sqs get-queue-attributes \
-  --queue-url $(aws sqs get-queue-url --queue-name kubesentinel-falco-events --query 'QueueUrl' --output text) \
+  --queue-url $(aws sqs get-queue-url --queue-name atdr-falco-events --query 'QueueUrl' --output text) \
   --attribute-names ApproximateNumberOfMessages
 ```
 
@@ -662,13 +662,13 @@ aws sqs get-queue-attributes \
 
 ```bash
 # Lambda 로그에서 에이전트 체인 실행 확인
-aws logs tail /aws/lambda/kubesentinel-detector \
+aws logs tail /aws/lambda/atdr-detector \
   --since 5m \
   --filter-pattern "Summary Agent\|Triage Agent\|Solution Agent\|Remediation Agent"
 
 # DynamoDB에서 인시던트 레코드 확인
 aws dynamodb scan \
-  --table-name kubesentinel-incidents \
+  --table-name atdr-incidents \
   --filter-expression "scenario = :s" \
   --expression-attribute-values '{":s":{"S":"crypto-mining"}}' \
   --query 'Items[*].{id:incident_id.S,severity:severity.S,status:status.S}'
@@ -702,7 +702,7 @@ echo "Time to Remediation: ~60sec (after approval)"
 # 시뮬레이션 리소스 정리
 kubectl delete job crypto-sim-job -n attack-simulation --ignore-not-found
 kubectl delete networkpolicy -n attack-simulation \
-  -l kubesentinel.io/simulation=true --ignore-not-found
+-l atdr.io/simulation=true --ignore-not-found
 
 # 인시던트 레코드 보존 (평가 데이터로 활용)
 echo "Incident records preserved in DynamoDB for evaluation"
@@ -724,4 +724,3 @@ echo "Incident records preserved in DynamoDB for evaluation"
 | 대응 성공률 | 격리 후 이상 행동 중단 비율 | > 95% |
 
 각 시뮬레이션 세션의 결과는 `data/labeled/` 디렉토리에 저장하고, 모델 재학습과 룰 튜닝에 활용한다.
-

@@ -1,6 +1,6 @@
 # 보안 강화 설계
 
-> KubeSentinel-AI — EKS 보안 강화 설계 문서
+> ATDR — EKS 보안 강화 설계 문서
 > 문서 버전: 0.1 | 작성일: 2026-05-04 | 대상 독자: 개발팀 (4인)
 
 ---
@@ -1472,6 +1472,140 @@ resource "aws_cloudwatch_event_target" "ecr_finding_sns" {
 
 ---
 
+## 10. 시크릿 관리
+
+ATDR의 시크릿(Slack Bot Token, Bedrock 자격증명, MCP 인증 토큰 등)은 AWS Secrets Manager에 저장하고, Kubernetes 워크로드에는 External Secrets Operator(ESO)로 동기화한다. Lambda는 런타임에 Secrets Manager SDK로 직접 읽는다.
+
+### 10.1 왜 Secrets Manager + ESO인가
+
+Lambda 환경변수에 시크릿을 직접 넣으면 Terraform state 파일에 평문으로 남는다. 보안 프로젝트에서 이러면 신뢰도가 떨어진다.
+
+| 항목 | 환경변수 직접 주입 | SSM Parameter Store | Secrets Manager + ESO |
+|------|-------------------|--------------------|-----------------------|
+| Terraform state 노출 | 평문 노출 | ARN만 노출 | ARN만 노출 |
+| 자동 로테이션 | 불가 | 수동 | 내장 지원 |
+| K8s Secret 동기화 | 불가 | ESO 필요 | ESO 네이티브 |
+| 감사 로그 | CloudTrail 미기록 | CloudTrail 기록 | CloudTrail 완전 기록 |
+| 비용 | 무료 | 무료 | 시크릿당 $0.40/월 |
+
+ATDR에서 관리할 시크릿은 5-6개 수준이므로 월 $2-3이다.
+
+### 10.2 시크릿 목록
+
+| 시크릿 이름 | 용도 | 소비자 |
+|------------|------|--------|
+| `atdr/slack/bot-token` | Slack Bot OAuth Token | Slack Bot Lambda |
+| `atdr/slack/signing-secret` | Slack Request 서명 검증 | API Gateway Lambda |
+| `atdr/mcp/auth-token` | EKS MCP 서버 인증 | Remediation Agent |
+| `atdr/bedrock/api-config` | Bedrock 엔드포인트 설정 | 모든 Agent Lambda |
+| `atdr/opensearch/endpoint` | OpenSearch Serverless 엔드포인트 | Solution Agent |
+
+### 10.3 Terraform 코드
+
+```hcl
+resource "aws_secretsmanager_secret" "slack_bot_token" {
+  name        = "atdr/slack/bot-token"
+  description = "Slack Bot OAuth Token"
+
+  tags = {
+    Project = "atdr"
+  }
+}
+
+resource "aws_secretsmanager_secret" "slack_signing_secret" {
+  name        = "atdr/slack/signing-secret"
+  description = "Slack Request Signing Secret"
+
+  tags = {
+    Project = "atdr"
+  }
+}
+
+resource "aws_secretsmanager_secret" "mcp_auth_token" {
+  name        = "atdr/mcp/auth-token"
+  description = "EKS MCP Server Auth Token"
+
+  tags = {
+    Project = "atdr"
+  }
+}
+```
+
+시크릿 값은 Terraform으로 관리하지 않는다. `aws secretsmanager put-secret-value` CLI로 수동 설정한다.
+
+```bash
+aws secretsmanager put-secret-value \
+  --secret-id atdr/slack/bot-token \
+  --secret-string '{"token":"xoxb-..."}'
+```
+
+### 10.4 Lambda에서 시크릿 읽기
+
+Lambda 환경변수에는 시크릿 ARN만 넣고, 런타임에 Secrets Manager SDK로 실제 값을 가져온다.
+
+```python
+import boto3
+import json
+from functools import lru_cache
+
+secrets_client = boto3.client("secretsmanager")
+
+@lru_cache(maxsize=8)
+def get_secret(secret_id: str) -> dict:
+    response = secrets_client.get_secret_value(SecretId=secret_id)
+    return json.loads(response["SecretString"])
+
+def lambda_handler(event, context):
+    slack_config = get_secret("atdr/slack/bot-token")
+    token = slack_config["token"]
+```
+
+`@lru_cache`로 Lambda 실행 컨텍스트 내에서 동일 시크릿을 반복 조회하지 않는다.
+
+### 10.5 External Secrets Operator (K8s 워크로드용)
+
+ESO가 Secrets Manager의 값을 Kubernetes Secret으로 자동 동기화한다.
+
+```yaml
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: mcp-auth
+  namespace: atdr
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: aws-secrets-manager
+    kind: ClusterSecretStore
+  target:
+    name: mcp-auth-token
+    creationPolicy: Owner
+  data:
+  - secretKey: token
+    remoteRef:
+      key: atdr/mcp/auth-token
+      property: token
+---
+apiVersion: external-secrets.io/v1beta1
+kind: ClusterSecretStore
+metadata:
+  name: aws-secrets-manager
+spec:
+  provider:
+    aws:
+      service: SecretsManager
+      region: ap-northeast-2
+      auth:
+        jwt:
+          serviceAccountRef:
+            name: external-secrets
+            namespace: external-secrets
+```
+
+ESO의 ServiceAccount는 Pod Identity로 Secrets Manager 읽기 권한을 부여한다.
+
+---
+
 ## 참고
 
 - [Cilium 1.19 릴리스 노트](https://github.com/cilium/cilium/releases/tag/v1.19.0)
@@ -1480,5 +1614,4 @@ resource "aws_cloudwatch_event_target" "ecr_finding_sns" {
 - [EKS Pod Identity](https://docs.aws.amazon.com/eks/latest/userguide/pod-identities.html)
 - [Sigstore cosign](https://docs.sigstore.dev/cosign/overview/)
 - [SLSA Framework](https://slsa.dev/)
-
 

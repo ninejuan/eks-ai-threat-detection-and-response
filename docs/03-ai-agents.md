@@ -27,20 +27,28 @@ ATDR(AI Threat Detection and Response)의 AI 레이어는 AWS Strands Agent SDK�
 
 ### Lambda 기반 실행 환경
 
-각 Agent는 독립적인 Lambda 함수로 배포된다. 실행 흐름은 다음과 같다.
+각 Agent는 독립적인 Lambda 함수로 배포된다. Step Functions Express Workflow가 4개 Agent의 실행 순서, 재시도, 에러 핸들링을 관리한다.
 
 ```
 EventBridge / SQS
       |
       v
-Lambda (Agent 함수)
+Step Functions Express Workflow
       |
-      +-- Bedrock API (Claude 모델 호출)
+      +-- [1] Lambda: Summary Agent
+      |         +-- Bedrock API (Haiku)
       |
-      +-- 필요 시 Tool 실행 (EKS API, OpenSearch, S3)
+      +-- [2] Lambda: Triage Agent
+      |         +-- Bedrock API (Haiku)
+      |
+      +-- [3] Lambda: Solution Agent
+      |         +-- Bedrock API (Sonnet) + OpenSearch KB
+      |
+      +-- [4] Lambda: Remediation Agent
+      |         +-- Bedrock API (Sonnet) + EKS MCP
       |
       v
-결과를 SQS / DynamoDB에 기록
+DynamoDB (인시던트 기록) + Slack (알림)
 ```
 
 Lambda 함수별 메모리와 타임아웃 설정은 Agent 역할에 따라 다르게 잡는다.
@@ -52,7 +60,7 @@ Lambda 함수별 메모리와 타임아웃 설정은 Agent 역할에 따라 다�
 | Solution Agent | 1024 MB | 120s | RAG 파이프라인, 벡터 검색 포함 |
 | Remediation Agent | 1024 MB | 180s | EKS API 호출, 검증 루프 포함 |
 
-### 4 Agent 오케스트레이션 패턴
+### 4 Agent 오케스트레이션: Step Functions Express Workflow
 
 ATDR은 단일 모놀리식 AI가 아니라 역할이 분리된 4개의 전문 Agent로 구성된다. 각 Agent는 이전 Agent의 출력을 입력으로 받아 처리하는 파이프라인 구조다.
 
@@ -72,7 +80,64 @@ ATDR은 단일 모놀리식 AI가 아니라 역할이 분리된 4개의 전문 A
 [Remediation Agent] -- 액션 실행 (Human Approval 포함)
 ```
 
-Agent 간 데이터는 SQS 큐를 통해 전달된다. 각 Agent는 자신의 입력 큐에서 메시지를 소비하고, 처리 결과를 다음 Agent의 큐에 발행한다. 이 구조 덕분에 각 Agent를 독립적으로 스케일링하거나 재시도할 수 있다.
+기존 설계에서는 Agent 간 데이터를 SQS 큐로 전달했으나, Step Functions Express Workflow로 전환했다. 이유는 세 가지다.
+
+첫째, end-to-end 추적이다. Step Functions 콘솔에서 전체 파이프라인의 실행 상태를 시각적으로 확인할 수 있다. 어떤 Agent에서 실패했는지, 각 단계의 입출력이 무엇인지 한눈에 보인다. X-Ray 통합도 자동으로 따라온다.
+
+둘째, 에러 핸들링이다. Agent별로 재시도 횟수, 백오프 전략, 타임아웃을 선언적으로 정의할 수 있다. SQS 기반에서는 DLQ 재처리 운영 절차를 직접 구현해야 했다.
+
+셋째, 비용이다. Express Workflow는 실행 횟수와 실행 시간 기반 과금이다. 데모 환경에서 하루 수십 건 처리 수준이면 월 $1 미만이다.
+
+```json
+{
+  "Comment": "ATDR Agent Pipeline",
+  "StartAt": "SummaryAgent",
+  "States": {
+    "SummaryAgent": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:ap-northeast-2:ACCOUNT:function:atdr-summary-agent",
+      "Retry": [{"ErrorEquals": ["States.TaskFailed"], "MaxAttempts": 2, "BackoffRate": 2}],
+      "Next": "TriageAgent"
+    },
+    "TriageAgent": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:ap-northeast-2:ACCOUNT:function:atdr-triage-agent",
+      "Retry": [{"ErrorEquals": ["States.TaskFailed"], "MaxAttempts": 2, "BackoffRate": 2}],
+      "Next": "CheckSeverity"
+    },
+    "CheckSeverity": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.severity",
+          "StringEquals": "P4",
+          "Next": "LogOnly"
+        }
+      ],
+      "Default": "SolutionAgent"
+    },
+    "SolutionAgent": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:ap-northeast-2:ACCOUNT:function:atdr-solution-agent",
+      "Retry": [{"ErrorEquals": ["States.TaskFailed"], "MaxAttempts": 2, "BackoffRate": 2}],
+      "Next": "RemediationAgent"
+    },
+    "RemediationAgent": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:ap-northeast-2:ACCOUNT:function:atdr-remediation-agent",
+      "Retry": [{"ErrorEquals": ["States.TaskFailed"], "MaxAttempts": 1}],
+      "End": true
+    },
+    "LogOnly": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:ap-northeast-2:ACCOUNT:function:atdr-log-incident",
+      "End": true
+    }
+  }
+}
+```
+
+Express Workflow는 최대 5분 실행 제한이 있다. 4개 Agent의 총 실행 시간이 이 안에 들어와야 한다. Summary(~5s) + Triage(~5s) + Solution(~30s) + Remediation(~60s) = ~100초이므로 충분하다. Human Approval이 필요한 경우에는 Remediation Agent가 Slack 알림을 보내고 콜백 패턴으로 처리한다.
 
 ---
 ## 2. Summary Agent

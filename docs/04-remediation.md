@@ -4,7 +4,7 @@
 
 ### 탐지에서 피드백까지
 
-KubeSentinel-AI의 대응 파이프라인은 여섯 단계로 순환한다.
+ATDR의 대응 파이프라인은 여섯 단계로 순환한다.
 
 ```
 탐지 → 분석 → 승인 → 실행 → 검증 → 피드백
@@ -65,9 +65,11 @@ MCP 서버는 EKS 클러스터 내부 또는 Lambda 환경에서 실행된다. I
 | `list_pods` | 네임스페이스 내 파드 목록 조회 | `pods:list` |
 | `get_pod` | 특정 파드 상세 정보 조회 | `pods:get` |
 | `delete_pod` | 파드 삭제 (재시작 트리거) | `pods:delete` |
-| `apply_network_policy` | NetworkPolicy 생성 또는 수정 | `networkpolicies:create,update` |
-| `delete_network_policy` | NetworkPolicy 삭제 | `networkpolicies:delete` |
-| `get_network_policies` | 현재 적용된 NetworkPolicy 목록 | `networkpolicies:list` |
+| `label_pod` | 파드 레이블 추가/수정 (Tetragon 격리용) | `pods:patch` |
+| `checkpoint_pod` | Container Checkpoint 생성 → S3 저장 | `pods:checkpoint` |
+| `apply_cilium_network_policy` | CiliumNetworkPolicy 생성 또는 수정 | `ciliumnetworkpolicies:create,update` |
+| `delete_cilium_network_policy` | CiliumNetworkPolicy 삭제 | `ciliumnetworkpolicies:delete` |
+| `get_cilium_network_policies` | 현재 적용된 CiliumNetworkPolicy 목록 | `ciliumnetworkpolicies:list` |
 | `patch_deployment` | Deployment 스펙 수정 (replicas 등) | `deployments:patch` |
 | `cordon_node` | 노드 스케줄링 비활성화 | `nodes:patch` |
 | `drain_node` | 노드 드레인 | `nodes:patch`, `pods:evict` |
@@ -75,6 +77,7 @@ MCP 서버는 EKS 클러스터 내부 또는 Lambda 환경에서 실행된다. I
 | `patch_cluster_role_binding` | ClusterRoleBinding 수정 | `clusterrolebindings:patch` |
 | `rotate_secret` | Secret 값 갱신 | `secrets:update` |
 | `label_namespace` | 네임스페이스 레이블 추가/수정 | `namespaces:patch` |
+| `capture_hubble_flows` | Hubble 네트워크 플로우 캡처 → S3 저장 | Hubble API 접근 |
 | `apply_manifest` | 임의 K8s 매니페스트 적용 | 매니페스트 종류에 따라 다름 |
 | `get_events` | 네임스페이스 이벤트 조회 | `events:list` |
 
@@ -82,89 +85,145 @@ MCP 서버는 EKS 클러스터 내부 또는 Lambda 환경에서 실행된다. I
 
 ## 3. 대응 액션 상세
 
-### 3.1 NetworkPolicy 생성/수정 (파드 격리)
+### 3.1 파드 격리 (Checkpoint → Tetragon → CiliumNetworkPolicy → 삭제)
 
 **트리거 조건**
 - 파드에서 비정상 아웃바운드 트래픽 탐지
 - 알 수 없는 외부 IP로의 반복 연결
 - 비콘 패턴 또는 C2 통신 의심
+- 컨테이너 내부에서 악성 프로세스 실행 탐지
 
-**실행 방법**
+**격리 전략: Checkpoint First, Kill Second**
 
-Remediation Agent가 `apply_network_policy` 도구를 호출해 해당 파드 레이블을 대상으로 하는 deny-all NetworkPolicy를 생성한다. 기존 정책이 있으면 병합하지 않고 격리 전용 정책을 별도로 추가한다.
+표준 Kubernetes NetworkPolicy는 기존 TCP 연결을 끊지 않는다. 새 연결만 차단한다. CiliumNetworkPolicy도 마찬가지다. 즉시 차단이 필요하면 Tetragon SIGKILL + Pod 삭제를 조합해야 한다.
 
-**kubectl 예시**
+동시에 포렌식 증거를 보존해야 하므로, 격리 전에 Container Checkpoint와 Hubble 플로우를 캡처한다.
+
+```
+실행 순서:
+
+1. Container Checkpoint + Hubble 플로우 캡처 → S3 저장 (1-2초)
+   - 메모리 덤프, 파일시스템, 열린 소켓 전부 캡처
+   - 해당 Pod의 최근 30분 네트워크 플로우 저장
+
+2. Tetragon SIGKILL label 적용 (< 100ms)
+   - Pod에 security.incident/compromised=true 레이블 추가
+   - 사전 배포된 TracingPolicy가 해당 레이블의 아웃바운드 연결을 즉시 SIGKILL
+
+3. CiliumNetworkPolicy deny-all 적용 (< 1초)
+   - 새 인바운드/아웃바운드 연결 차단
+
+4. Pod 강제 삭제 + Deployment scale 0 (< 2초)
+   - 기존 연결 종료
+   - Deployment가 새 Pod를 재생성하지 않도록 replicas=0
+```
+
+**Step 1: Container Checkpoint + Hubble 캡처**
+
+```bash
+# Container Checkpoint (K8s 1.35 beta)
+kubectl checkpoint pod payment-service-7d9f8b-xk2p9 -n production \
+  --container=payment-service \
+  --export-to=s3://atdr-forensics/checkpoints/inc-20260504-001/
+
+# Hubble 플로우 캡처
+hubble observe --pod production/payment-service-7d9f8b-xk2p9 \
+  --since=30m --output json > /tmp/hubble-flows.json
+aws s3 cp /tmp/hubble-flows.json \
+  s3://atdr-forensics/hubble/inc-20260504-001/flows.json
+```
+
+**Step 2: Tetragon SIGKILL label**
+
+사전에 클러스터에 배포해 둔 TracingPolicy가 `security.incident/compromised=true` 레이블이 붙은 Pod의 아웃바운드 TCP 연결을 즉시 SIGKILL한다.
+
+```yaml
+# 사전 배포: Tetragon TracingPolicy
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicy
+metadata:
+  name: kill-compromised-outbound
+spec:
+  podSelector:
+    matchLabels:
+      security.incident/compromised: "true"
+  kprobes:
+  - call: "tcp_connect"
+    syscall: false
+    args:
+    - index: 0
+      type: "sock"
+    selectors:
+    - matchArgs:
+      - index: 0
+        operator: "NotDAddr"
+        values:
+        - "127.0.0.1"
+      matchActions:
+      - action: Sigkill
+```
+
+```bash
+# Remediation Agent가 레이블 적용
+kubectl label pod payment-service-7d9f8b-xk2p9 -n production \
+  security.incident/compromised=true
+```
+
+**Step 3: CiliumNetworkPolicy deny-all**
 
 ```bash
 kubectl apply -f - <<EOF
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
 metadata:
   name: isolate-compromised-pod
   namespace: production
   labels:
-    kubesentinel.io/managed: "true"
-    kubesentinel.io/incident-id: "inc-20260504-001"
+    atdr.io/managed: "true"
+    atdr.io/incident-id: "inc-20260504-001"
 spec:
-  podSelector:
+  endpointSelector:
     matchLabels:
-      app: payment-service
-      pod-name: payment-service-7d9f8b-xk2p9
-  policyTypes:
-  - Ingress
-  - Egress
-  # ingress/egress 규칙 없음 = 모든 트래픽 차단
+      security.incident/compromised: "true"
+  ingressDeny:
+  - fromEndpoints:
+    - matchLabels: {}
+  egressDeny:
+  - toEndpoints:
+    - matchLabels: {}
 EOF
 ```
 
-**검증 방법**
+**Step 4: Pod 삭제 + Deployment scale 0**
 
 ```bash
-# NetworkPolicy 적용 확인
-kubectl get networkpolicy isolate-compromised-pod -n production
-
-# 파드에서 외부 연결 시도 (차단 확인)
-kubectl exec -n production payment-service-7d9f8b-xk2p9 -- \
-  curl --connect-timeout 3 https://8.8.8.8 || echo "blocked"
-```
-
----
-
-### 3.2 Pod 삭제/재시작
-
-**트리거 조건**
-- 컨테이너 내부에서 악성 프로세스 실행 탐지
-- 런타임 이상 행동 (파일시스템 변조, 권한 상승 시도)
-- 메모리 기반 공격 의심 (재시작으로 메모리 초기화)
-
-**실행 방법**
-
-`delete_pod` 도구로 파드를 삭제한다. Deployment가 관리하는 파드라면 자동으로 새 파드가 생성된다. 재시작 후 동일 이상 행동이 반복되면 이미지 자체가 오염된 것으로 판단해 에스컬레이션한다.
-
-**kubectl 예시**
-
-```bash
-# 파드 삭제 (Deployment가 자동 재생성)
-kubectl delete pod payment-service-7d9f8b-xk2p9 -n production
-
-# 강제 삭제 (graceful termination 불가 시)
+# Pod 강제 삭제
 kubectl delete pod payment-service-7d9f8b-xk2p9 -n production \
   --grace-period=0 --force
+
+# Deployment가 새 Pod를 재생성하지 않도록 scale 0
+kubectl scale deployment payment-service -n production --replicas=0
 ```
 
 **검증 방법**
 
 ```bash
-# 새 파드 생성 확인
-kubectl get pods -n production -l app=payment-service -w
+# CiliumNetworkPolicy 적용 확인
+kubectl get ciliumnetworkpolicy isolate-compromised-pod -n production
 
-# 새 파드에서 동일 이상 행동 재발 여부 확인 (30초 관찰)
-kubectl logs -n production -l app=payment-service --since=30s
+# Pod 종료 확인
+kubectl get pods -n production -l app=payment-service
+
+# Deployment replicas 0 확인
+kubectl get deployment payment-service -n production -o jsonpath='{.spec.replicas}'
+
+# 포렌식 증거 저장 확인
+aws s3 ls s3://atdr-forensics/checkpoints/inc-20260504-001/
 ```
 
 ---
 
-### 3.3 네임스페이스 격리 (default-deny NetworkPolicy)
+### 3.2 네임스페이스 격리 (default-deny CiliumNetworkPolicy)
 
 **트리거 조건**
 - 네임스페이스 내 여러 파드에서 동시 이상 행동
@@ -185,8 +244,8 @@ metadata:
   name: default-deny-all
   namespace: compromised-ns
   labels:
-    kubesentinel.io/managed: "true"
-    kubesentinel.io/incident-id: "inc-20260504-002"
+    atdr.io/managed: "true"
+    atdr.io/incident-id: "inc-20260504-002"
 spec:
   podSelector: {}   # 네임스페이스 내 모든 파드
   policyTypes:
@@ -235,7 +294,7 @@ kind: ClusterRoleBinding
 metadata:
   name: suspicious-admin-binding
   labels:
-    kubesentinel.io/modified: "true"
+    atdr.io/modified: "true"
 subjects:
 - kind: ServiceAccount
   name: payment-service
@@ -430,7 +489,7 @@ P1 타임아웃 시 자동으로 실행되는 최소 격리 액션은 서비스 
 결과 수집 (성공/실패, 소요 시간, 부작용)
      │
      ▼
-S3 런북 조회 (s3://kubesentinel-runbooks/{threat_type}.json)
+S3 런북 조회 (s3://atdr-runbooks/{threat_type}.json)
      │
      ▼
 결과 반영 (성공률, 평균 소요 시간, 주의사항 업데이트)
@@ -498,12 +557,12 @@ metadata:
   name: isolate-compromised-pod
   namespace: production
   labels:
-    kubesentinel.io/managed: "true"
-    kubesentinel.io/incident-id: "inc-20260504-001"
-    kubesentinel.io/action: "pod-isolation"
+    atdr.io/managed: "true"
+    atdr.io/incident-id: "inc-20260504-001"
+    atdr.io/action: "pod-isolation"
   annotations:
-    kubesentinel.io/created-at: "2026-05-04T10:00:00Z"
-    kubesentinel.io/expires-at: "2026-05-04T22:00:00Z"
+    atdr.io/created-at: "2026-05-04T10:00:00Z"
+    atdr.io/expires-at: "2026-05-04T22:00:00Z"
 spec:
   podSelector:
     matchLabels:
@@ -523,8 +582,8 @@ metadata:
   name: default-deny-all
   namespace: compromised-ns
   labels:
-    kubesentinel.io/managed: "true"
-    kubesentinel.io/action: "namespace-isolation"
+    atdr.io/managed: "true"
+    atdr.io/action: "namespace-isolation"
 spec:
   podSelector: {}
   policyTypes:
@@ -541,7 +600,7 @@ metadata:
   name: allow-monitoring-only
   namespace: compromised-ns
   labels:
-    kubesentinel.io/managed: "true"
+    atdr.io/managed: "true"
 spec:
   podSelector: {}
   policyTypes:
@@ -564,9 +623,9 @@ kind: ClusterRoleBinding
 metadata:
   name: payment-service-binding
   labels:
-    kubesentinel.io/modified: "true"
-    kubesentinel.io/original-role: "cluster-admin"
-    kubesentinel.io/incident-id: "inc-20260504-003"
+    atdr.io/modified: "true"
+    atdr.io/original-role: "cluster-admin"
+    atdr.io/incident-id: "inc-20260504-003"
 subjects:
 - kind: ServiceAccount
   name: payment-service
@@ -586,7 +645,7 @@ metadata:
   name: quarantine-readonly
   namespace: production
   labels:
-    kubesentinel.io/managed: "true"
+    atdr.io/managed: "true"
 rules:
 - apiGroups: [""]
   resources: ["pods"]

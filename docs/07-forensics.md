@@ -52,11 +52,11 @@ S3 Object Lock 저장 (타임스탬프 + SHA-256)
 ```
 이벤트 원본 데이터
     │
-    ├── GuardDuty Findings    ──► s3://kubesentinel-forensics/guardduty/
-    ├── Falco 이벤트          ──► s3://kubesentinel-forensics/falco/
-    ├── EKS Audit Logs        ──► s3://kubesentinel-forensics/eks-audit/
-    ├── CloudTrail            ──► s3://kubesentinel-forensics/cloudtrail/
-    └── Hubble 플로우         ──► s3://kubesentinel-forensics/hubble/
+    ├── GuardDuty Findings    ──► s3://atdr-forensics/guardduty/
+    ├── Falco 이벤트          ──► s3://atdr-forensics/falco/
+    ├── EKS Audit Logs        ──► s3://atdr-forensics/eks-audit/
+    ├── CloudTrail            ──► s3://atdr-forensics/cloudtrail/
+    └── Hubble 플로우         ──► s3://atdr-forensics/hubble/
 ```
 
 ### Terraform 설정
@@ -65,10 +65,10 @@ S3 Object Lock 저장 (타임스탬프 + SHA-256)
 # terraform/forensics/s3.tf
 
 resource "aws_s3_bucket" "forensics" {
-  bucket = "kubesentinel-forensics-${var.account_id}"
+  bucket = "atdr-forensics-${var.account_id}"
 
   tags = {
-    Project     = "kubesentinel"
+    Project     = "atdr"
     Purpose     = "forensics"
     Compliance  = "7year-retention"
   }
@@ -120,7 +120,7 @@ resource "aws_s3_bucket_public_access_block" "forensics" {
 
 # KMS 키
 resource "aws_kms_key" "forensics" {
-  description             = "KubeSentinel forensics data encryption key"
+  description             = "ATDR forensics data encryption key"
   deletion_window_in_days = 30
   enable_key_rotation     = true
 
@@ -259,7 +259,7 @@ CloudTrail Lake는 EKS 감사 로그를 포함한 AWS API 호출 이력을 SQL�
 # terraform/forensics/cloudtrail-lake.tf
 
 resource "aws_cloudtrail_event_data_store" "main" {
-  name                 = "kubesentinel-forensics-lake"
+  name                 = "atdr-forensics-lake"
   retention_period     = 2555  # 7년 (일 단위)
   multi_region_enabled = true
   organization_enabled = false
@@ -289,7 +289,7 @@ resource "aws_cloudtrail_event_data_store" "main" {
   }
 
   tags = {
-    Project    = "kubesentinel"
+    Project    = "atdr"
     Purpose    = "forensics"
     Retention  = "7years"
   }
@@ -306,7 +306,7 @@ SELECT
   requestParameters,
   sourceIPAddress,
   userAgent
-FROM kubesentinel-forensics-lake
+FROM atdr-forensics-lake
 WHERE
   eventSource = 'eks.amazonaws.com'
   AND eventName = 'CreatePodExecOptions'
@@ -322,7 +322,7 @@ SELECT
   responseElements,
   errorCode,
   errorMessage
-FROM kubesentinel-forensics-lake
+FROM atdr-forensics-lake
 WHERE
   userIdentity.arn LIKE '%payment-service%'
   AND eventTime BETWEEN '2026-05-04 09:00:00' AND '2026-05-04 11:00:00'
@@ -335,7 +335,7 @@ SELECT
   eventName,
   sourceIPAddress,
   errorCode
-FROM kubesentinel-forensics-lake
+FROM atdr-forensics-lake
 WHERE
   eventName IN (
     'AttachRolePolicy',
@@ -355,7 +355,7 @@ SELECT
   userIdentity.sessionContext.sessionIssuer.arn AS role_arn,
   userIdentity.sessionContext.webIdFederationData.federatedUserId AS pod_identity,
   sourceIPAddress
-FROM kubesentinel-forensics-lake
+FROM atdr-forensics-lake
 WHERE
   userIdentity.type = 'AssumedRole'
   AND userIdentity.sessionContext.webIdFederationData.federatedUserId
@@ -369,7 +369,7 @@ SELECT
   userIdentity.arn,
   eventName,
   requestParameters
-FROM kubesentinel-forensics-lake
+FROM atdr-forensics-lake
 WHERE
   eventName LIKE 'Delete%'
   AND eventTime >= DATEADD(hour, -24, NOW())
@@ -399,7 +399,7 @@ EKS 관리형 노드 그룹에서는 Launch Template의 UserData로 kubelet 설�
 
 ```bash
 #!/bin/bash
-/etc/eks/bootstrap.sh kubesentinel \
+/etc/eks/bootstrap.sh atdr \
   --kubelet-extra-args '--feature-gates=ContainerCheckpoint=true'
 ```
 
@@ -420,7 +420,7 @@ from pathlib import Path
 
 KUBELET_API = "https://localhost:10250"
 CHECKPOINT_DIR = Path("/var/lib/kubelet/checkpoints")
-S3_BUCKET = "kubesentinel-forensics-{account_id}"
+  S3_BUCKET = "atdr-forensics-{account_id}"
 
 def create_checkpoint(namespace: str, pod: str, container: str, incident_id: str) -> dict:
     """의심 컨테이너 체크포인트 생성 후 S3에 저장"""
@@ -499,7 +499,7 @@ def create_checkpoint(namespace: str, pod: str, container: str, incident_id: str
 ```bash
 # 1. S3에서 체크포인트 다운로드
 aws s3 cp \
-  s3://kubesentinel-forensics/checkpoints/inc-001/production/payment-service/app/20260504T100000Z.tar \
+  s3://atdr-forensics/checkpoints/inc-001/production/payment-service/app/20260504T100000Z.tar \
   /tmp/checkpoint.tar
 
 # 2. 체크포인트 무결성 검증
@@ -620,7 +620,7 @@ hubble observe \
 
 # S3에 보존
 aws s3 cp /tmp/flows-incident-001.json \
-  s3://kubesentinel-forensics/hubble/inc-20260504-001/flows.json \
+  s3://atdr-forensics/hubble/inc-20260504-001/flows.json \
   --sse aws:kms
 ```
 
@@ -680,7 +680,7 @@ from observer_pb2_grpc import ObserverStub
 from flow_pb2 import FlowFilter
 
 HUBBLE_RELAY = "hubble-relay.kube-system.svc.cluster.local:4245"
-S3_BUCKET = "kubesentinel-forensics"
+  S3_BUCKET = "atdr-forensics"
 
 def stream_flows_to_s3():
     channel = grpc.insecure_channel(HUBBLE_RELAY)
@@ -1038,7 +1038,7 @@ def create_custody_record(incident_id: str, evidence_manifest: dict) -> str:
         if evidence_info and "s3_key" in evidence_info:
             try:
                 retention = s3.get_object_retention(
-                    Bucket="kubesentinel-forensics",
+  Bucket="atdr-forensics",
                     Key=evidence_info["s3_key"]
                 )
                 evidence_status.append({
@@ -1064,7 +1064,7 @@ def create_custody_record(incident_id: str, evidence_manifest: dict) -> str:
     }
 
     s3.put_object(
-        Bucket="kubesentinel-forensics",
+  Bucket="atdr-forensics",
         Key=f"custody/{incident_id}/chain-of-custody.json",
         Body=json.dumps(custody_record, indent=2, default=str),
         ServerSideEncryption="aws:kms"
@@ -1108,7 +1108,7 @@ def generate_forensics_report(incident_id: str, analysis_result: dict) -> str:
 
 ## 증거 무결성 확인
 모든 증거 파일은 S3 Object Lock(GOVERNANCE, 7년)으로 보호됩니다.
-Chain of Custody: s3://kubesentinel-forensics/custody/{incident_id}/chain-of-custody.json
+Chain of Custody: s3://atdr-forensics/custody/{incident_id}/chain-of-custody.json
 """
 
     # 보고서를 S3에 저장
@@ -1119,4 +1119,3 @@ Chain of Custody: s3://kubesentinel-forensics/custody/{incident_id}/chain-of-cus
 ```
 
 ---
-

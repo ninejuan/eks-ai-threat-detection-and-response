@@ -307,7 +307,7 @@ loki:
         cache_location: /data/loki/boltdb-shipper-cache
         shared_store: s3
       aws:
-        s3: s3://kubesentinel-loki-logs/
+        s3: s3://atdr-loki-logs/
         region: ap-northeast-2
 
 promtail:
@@ -336,7 +336,7 @@ config:
     apikey: ""
     minimumpriority: "warning"
     tenant: ""
-    extralabels: "source=falco,cluster=kubesentinel"
+    extralabels: "source=falco,cluster=atdr"
     customHeaders: ""
     mutualtls: false
     checkcert: true
@@ -367,7 +367,7 @@ def handler(event, context):
                 "job": "eks-controlplane",
                 "log_group": log_data['logGroup'],
                 "log_stream": log_data['logStream'],
-                "cluster": "kubesentinel"
+                "cluster": "atdr"
             },
             "values": [
                 [str(log_event['timestamp'] * 1_000_000), log_event['message']]

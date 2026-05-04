@@ -3,7 +3,7 @@
 
 ## 1. Project Summary
 
-KubeSentinel-AI is a security research and engineering project that detects, analyzes, and responds to threats in Kubernetes workloads running on AWS EKS.
+ATDR is a security research and engineering project that detects, analyzes, and responds to threats in Kubernetes workloads running on AWS EKS.
 
 The system collects security and operational telemetry from cloud, Kubernetes, runtime, and network layers, then uses AI/ML-based analysis to:
 
@@ -40,7 +40,7 @@ Security operators often need to manually inspect multiple dashboards, logs, and
 - how the threat is spreading
 - what remediation action should be taken
 
-KubeSentinel-AI aims to reduce that burden by building an AI-driven analysis and response layer on top of AWS and Kubernetes telemetry.
+ATDR aims to reduce that burden by building an AI-driven analysis and response layer on top of AWS and Kubernetes telemetry.
 
 ---
 
@@ -396,4 +396,4 @@ evaluation and final report
 
 ## 17. One-Sentence Definition
 
-KubeSentinel-AI is an AI-driven security system for AWS EKS that detects, correlates, explains, and responds to runtime and network threats in Kubernetes environments.
+ATDR is an AI-driven security system for AWS EKS that detects, correlates, explains, and responds to runtime and network threats in Kubernetes environments.

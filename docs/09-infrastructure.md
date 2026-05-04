@@ -165,11 +165,11 @@ resource "aws_eks_node_group" "general" {
   node_role_arn   = var.node_role_arn
   subnet_ids      = var.private_subnet_ids
 
-  instance_types = ["t3.medium"]
+  instance_types = ["t3.large"]
 
   scaling_config {
-    desired_size = 2
-    min_size     = 1
+    desired_size = 1
+    min_size     = 0
     max_size     = 3
   }
 
@@ -755,16 +755,16 @@ resource "aws_cloudwatch_metric_alarm" "dlq_not_empty" {
 | 리소스 | 단가 | 월 예상 비용 |
 |---|---|---|
 | EKS 클러스터 | $0.10/hr | ~$72 |
-| t3.medium 노드 x2 | $0.0416/hr x2 | ~$60 |
-| c5.large 노드 x1 | $0.085/hr | ~$61 |
+| t3.large 노드 x1 | $0.1052/hr | ~$76 |
+| c5.large 노드 x1 | $0.096/hr | ~$69 |
 | NAT Gateway | $0.045/hr + 데이터 | ~$33 |
 | GuardDuty | 프리티어 30일 이후 과금 | ~$10 |
 | Bedrock (Claude) | 데모 시만 호출 | ~$5 |
 | OpenSearch Serverless | OCU 최소 0.5 | ~$20 |
 | S3, SNS, SQS, Lambda | 사용량 기반 | ~$5 |
-| **합계** | | **~$266/월** |
+| **합계** | | **~$290/월** |
 
-비용을 줄이는 가장 효과적인 방법은 사용하지 않을 때 노드 그룹을 0으로 스케일 다운하는 것이다. EKS 클러스터 자체는 $0.10/hr이 계속 나가지만, 노드가 없으면 EC2 비용이 사라진다. `terraform apply`로 `desired_size = 0`을 적용하거나, Karpenter를 써서 워크로드가 없을 때 자동으로 노드를 제거할 수 있다.
+실험이 끝나면 `make destroy`(`terraform destroy`)로 전체 인프라를 내린다. 노드 그룹의 `min_size`를 0으로 설정해 두었으므로, 실험 중간에 비용을 줄이려면 `make scale-down`으로 노드를 0으로 스케일 다운할 수도 있다.
 
 GuardDuty는 첫 30일 프리티어가 끝나면 분석 데이터 양에 따라 과금된다. 데모 환경에서 트래픽이 많지 않으면 월 $10 수준이다.
 

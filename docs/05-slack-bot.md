@@ -21,7 +21,7 @@ API Gateway (REST API)
           └─ Remediation Agent (승인 후 실행 트리거)
 ```
 
-KubeSentinel-AI의 Slack 봇은 Slack Bolt SDK(Python)로 구현하고 AWS Lambda 위에서 실행한다.
+ATDR의 Slack 봇은 Slack Bolt SDK(Python)로 구현하고 AWS Lambda 위에서 실행한다.
 
 ### Socket Mode vs HTTP Mode
 
@@ -166,7 +166,7 @@ def handle_approve(ack, body, client):
 
 ### 서명된 액션 페이로드 (HMAC)
 
-버튼의 `value` 필드에 담기는 페이로드는 HMAC-SHA256으로 서명한다. 이렇게 하면 페이로드 위변조를 탐지할 수 있고, 승인 요청이 실제로 KubeSentinel-AI에서 발행된 것인지 검증할 수 있다.
+버튼의 `value` 필드에 담기는 페이로드는 HMAC-SHA256으로 서명한다. 이렇게 하면 페이로드 위변조를 탐지할 수 있고, 승인 요청이 실제로 ATDR에서 발행된 것인지 검증할 수 있다.
 
 ```python
 import hmac
@@ -239,7 +239,7 @@ def log_approval_event(
     user_name: str,
 ):
     dynamodb.put_item(
-        TableName="kubesentinel-approval-audit",
+        TableName="atdr-approval-audit",
         Item={
             "approval_id": {"S": approval_id},
             "action": {"S": action},
@@ -272,7 +272,7 @@ def log_approval_event(
 /status [namespace]
 ```
 
-현재 활성 인시던트 수, 격리된 파드 목록, 적용 중인 KubeSentinel 관리 NetworkPolicy 목록을 반환한다.
+현재 활성 인시던트 수, 격리된 파드 목록, 적용 중인 ATDR 관리 NetworkPolicy 목록을 반환한다.
 
 ```python
 @app.command("/status")
