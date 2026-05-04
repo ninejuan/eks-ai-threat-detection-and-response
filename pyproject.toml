@@ -1,0 +1,45 @@
+[tool.ruff]
+target-version = "py312"
+line-length = 120
+
+[tool.ruff.lint]
+select = [
+    "E",
+    "F",
+    "W",
+    "I",
+    "N",
+    "UP",
+    "S",
+    "B",
+    "A",
+    "C4",
+    "DTZ",
+    "T10",
+    "ISC",
+    "ICN",
+    "PIE",
+    "PT",
+    "RSE",
+    "RET",
+    "SLF",
+    "SIM",
+    "TID",
+    "TCH",
+    "ARG",
+    "ERA",
+    "PL",
+    "TRY",
+    "FLY",
+    "PERF",
+    "RUF",
+]
+ignore = [
+    "S101",
+    "TRY003",
+    "PLR0913",
+    "ERA001",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "ARG001", "PLR2004"]
