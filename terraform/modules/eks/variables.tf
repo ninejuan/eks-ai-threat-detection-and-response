@@ -37,3 +37,8 @@ variable "private_subnet_ids" {
   description = "List of private subnet IDs for EKS"
   type        = list(string)
 }
+
+variable "aws_lb_controller_role_arn" {
+  description = "IAM role ARN for AWS Load Balancer Controller Pod Identity"
+  type        = string
+}

@@ -71,6 +71,15 @@ deploy-infra: build
 	cd $(TF_DIR) && terraform apply -auto-approve
 
 deploy-k8s:
+	@echo "Installing AWS Load Balancer Controller..."
+	helm repo add eks https://aws.github.io/eks-charts 2>/dev/null || true
+	helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller \
+		-n kube-system \
+		--set clusterName=$(CLUSTER) \
+		--set serviceAccount.create=true \
+		--set serviceAccount.name=aws-load-balancer-controller \
+		--set region=$(REGION) \
+		--set vpcId=$$(aws eks describe-cluster --name $(CLUSTER) --region $(REGION) --query 'cluster.resourcesVpcConfig.vpcId' --output text)
 	@echo "Installing Falco..."
 	helm repo add falcosecurity https://falcosecurity.github.io/charts 2>/dev/null || true
 	helm upgrade --install falco falcosecurity/falco \
@@ -91,6 +100,8 @@ deploy-k8s:
 	helm upgrade --install loki grafana/loki \
 		-n monitoring \
 		-f kubernetes/monitoring/loki-values.yaml
+	@echo "Applying Grafana Ingress..."
+	kubectl apply -f kubernetes/monitoring/grafana-ingress.yaml
 	@echo "Installing External Secrets Operator..."
 	helm repo add external-secrets https://charts.external-secrets.io 2>/dev/null || true
 	helm upgrade --install external-secrets external-secrets/external-secrets \

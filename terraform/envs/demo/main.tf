@@ -44,14 +44,15 @@ module "iam" {
 module "eks" {
   source = "../../modules/eks"
 
-  cluster_name              = "${var.project_name}-${var.environment}"
-  cluster_role_arn          = module.iam.eks_cluster_role_arn
-  node_role_arn             = module.iam.eks_node_role_arn
-  admin_role_arn            = module.iam.eks_cluster_role_arn
-  falco_pod_role_arn        = module.iam.falco_pod_role_arn
-  external_secrets_role_arn = module.iam.external_secrets_role_arn
-  vpc_id                    = module.vpc.vpc_id
-  private_subnet_ids        = module.vpc.private_subnet_ids
+  cluster_name               = "${var.project_name}-${var.environment}"
+  cluster_role_arn           = module.iam.eks_cluster_role_arn
+  node_role_arn              = module.iam.eks_node_role_arn
+  admin_role_arn             = module.iam.eks_cluster_role_arn
+  falco_pod_role_arn         = module.iam.falco_pod_role_arn
+  external_secrets_role_arn  = module.iam.external_secrets_role_arn
+  aws_lb_controller_role_arn = module.iam.aws_lb_controller_role_arn
+  vpc_id                     = module.vpc.vpc_id
+  private_subnet_ids         = module.vpc.private_subnet_ids
 }
 
 module "sns_sqs" {

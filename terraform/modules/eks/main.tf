@@ -131,3 +131,10 @@ resource "aws_eks_pod_identity_association" "external_secrets" {
   service_account = "external-secrets"
   role_arn        = var.external_secrets_role_arn
 }
+
+resource "aws_eks_pod_identity_association" "aws_lb_controller" {
+  cluster_name    = aws_eks_cluster.main.name
+  namespace       = "kube-system"
+  service_account = "aws-load-balancer-controller"
+  role_arn        = var.aws_lb_controller_role_arn
+}
