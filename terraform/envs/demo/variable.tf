@@ -1,19 +1,17 @@
 variable "environment" {
-  description = "Deployment environment identifier (e.g. dev, staging, prod)."
+  description = "Deployment environment (e.g. demo, dev, prod)"
   type        = string
+  default     = "demo"
 }
 
 variable "project_name" {
-  description = "Human-friendly project name used for tagging."
+  description = "Project name used for resource naming and tagging"
   type        = string
+  default     = "atdr"
 }
 
 variable "region" {
-  description = "AWS region where the infrastructure is provisioned."
+  description = "AWS region"
   type        = string
-}
-
-variable "prefix" {
-  description = "Global resource prefix applied to all names."
-  type        = string
+  default     = "ap-northeast-2"
 }
