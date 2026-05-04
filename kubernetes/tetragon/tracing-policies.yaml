@@ -1,0 +1,81 @@
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicy
+metadata:
+  name: kill-compromised-outbound
+spec:
+  podSelector:
+    matchLabels:
+      security.incident/compromised: "true"
+  kprobes:
+    - call: tcp_connect
+      syscall: false
+      args:
+        - index: 0
+          type: sock
+      selectors:
+        - matchArgs:
+            - index: 0
+              operator: NotDAddr
+              values:
+                - "127.0.0.1"
+          matchActions:
+            - action: Sigkill
+---
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicy
+metadata:
+  name: detect-privilege-escalation
+spec:
+  kprobes:
+    - call: __x64_sys_setuid
+      syscall: true
+      args:
+        - index: 0
+          type: int
+      selectors:
+        - matchArgs:
+            - index: 0
+              operator: Equal
+              values:
+                - "0"
+          matchActions:
+            - action: Post
+---
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicy
+metadata:
+  name: detect-sensitive-file-access
+spec:
+  kprobes:
+    - call: fd_install
+      syscall: false
+      args:
+        - index: 0
+          type: int
+        - index: 1
+          type: file
+      selectors:
+        - matchArgs:
+            - index: 1
+              operator: Prefix
+              values:
+                - /etc/shadow
+                - /etc/passwd
+                - /var/run/secrets/kubernetes.io
+          matchActions:
+            - action: Post
+---
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicy
+metadata:
+  name: detect-container-escape
+spec:
+  kprobes:
+    - call: __x64_sys_unshare
+      syscall: true
+      args:
+        - index: 0
+          type: int
+      selectors:
+        - matchActions:
+            - action: Post

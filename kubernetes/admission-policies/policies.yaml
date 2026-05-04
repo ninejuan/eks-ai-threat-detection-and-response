@@ -1,0 +1,78 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: deny-privileged-containers
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["pods"]
+  validations:
+    - expression: >-
+        !object.spec.containers.exists(c,
+          c.?securityContext.?privileged.orValue(false) == true)
+      message: "Privileged containers are not allowed"
+    - expression: >-
+        !object.spec.containers.exists(c,
+          c.?securityContext.?runAsUser.orValue(1000) == 0)
+      message: "Running as root (UID 0) is not allowed"
+    - expression: >-
+        !object.spec.volumes.exists(v,
+          v.?hostPath.orValue(null) != null)
+      message: "hostPath volumes are not allowed"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: deny-privileged-containers
+spec:
+  policyName: deny-privileged-containers
+  validationActions:
+    - Deny
+  matchResources:
+    namespaceSelector:
+      matchExpressions:
+        - key: kubernetes.io/metadata.name
+          operator: NotIn
+          values:
+            - kube-system
+            - falco
+            - tetragon
+            - monitoring
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: require-resource-limits
+spec:
+  failurePolicy: Warn
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["pods"]
+  validations:
+    - expression: >-
+        object.spec.containers.all(c,
+          c.?resources.?limits.?memory.orValue("") != "")
+      message: "All containers must have memory limits set"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: require-resource-limits
+spec:
+  policyName: require-resource-limits
+  validationActions:
+    - Warn
+  matchResources:
+    namespaceSelector:
+      matchExpressions:
+        - key: kubernetes.io/metadata.name
+          operator: NotIn
+          values:
+            - kube-system

@@ -1,0 +1,124 @@
+prometheus:
+  prometheusSpec:
+    retention: 30d
+    resources:
+      requests:
+        cpu: 500m
+        memory: 1Gi
+      limits:
+        cpu: "2"
+        memory: 2Gi
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 50Gi
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+
+  additionalServiceMonitors:
+    - name: falco-metrics
+      selector:
+        matchLabels:
+          app.kubernetes.io/name: falco
+      endpoints:
+        - port: metrics
+          interval: 30s
+
+    - name: tetragon-metrics
+      selector:
+        matchLabels:
+          app.kubernetes.io/name: tetragon
+      endpoints:
+        - port: metrics
+          interval: 30s
+
+grafana:
+  enabled: true
+  adminPassword: atdr-demo
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  persistence:
+    enabled: true
+    size: 10Gi
+  dashboardProviders:
+    dashboardproviders.yaml:
+      apiVersion: 1
+      providers:
+        - name: atdr
+          orgId: 1
+          folder: ATDR
+          type: file
+          disableDeletion: false
+          editable: true
+          options:
+            path: /var/lib/grafana/dashboards/atdr
+
+alertmanager:
+  enabled: true
+  config:
+    global:
+      resolve_timeout: 5m
+    route:
+      group_by: ['alertname', 'namespace']
+      group_wait: 10s
+      group_interval: 5m
+      repeat_interval: 12h
+      receiver: slack
+    receivers:
+      - name: slack
+        slack_configs:
+          - api_url_file: /etc/alertmanager/secrets/slack-webhook-url
+            channel: '#atdr-alerts'
+            send_resolved: true
+            title: '{{ .GroupLabels.alertname }}'
+            text: >-
+              {{ range .Alerts }}
+              *Alert:* {{ .Annotations.summary }}
+              *Severity:* {{ .Labels.severity }}
+              *Namespace:* {{ .Labels.namespace }}
+              {{ end }}
+
+additionalPrometheusRulesMap:
+  atdr-rules:
+    groups:
+      - name: atdr.security
+        rules:
+          - alert: FalcoHighSeverityAlert
+            expr: rate(falco_events{priority=~"Critical|Emergency"}[5m]) > 0
+            for: 1m
+            labels:
+              severity: critical
+            annotations:
+              summary: "Falco critical alert detected"
+
+          - alert: TetragonPolicyViolation
+            expr: rate(tetragon_events_total{event_type="PROCESS_KPROBE"}[5m]) > 10
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: "High rate of Tetragon policy events"
+
+          - alert: EBPFAgentThrottled
+            expr: rate(container_cpu_throttled_seconds_total{pod=~"falco.*|tetragon.*|guardduty.*"}[5m]) > 0.1
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: "{{ $labels.pod }} CPU throttled on {{ $labels.node }}"
+
+          - alert: NodeMemoryHigh
+            expr: (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) > 0.85
+            for: 5m
+            labels:
+              severity: warning
+            annotations:
+              summary: "Node {{ $labels.node }} memory at {{ $value | humanizePercentage }}"
