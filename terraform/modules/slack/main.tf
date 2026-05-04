@@ -65,6 +65,7 @@ resource "aws_lambda_function" "slack_bot" {
   filename      = "${path.module}/placeholder.zip"
   timeout       = 30
   memory_size   = 256
+  layers        = var.lambda_layer_arn != "" ? [var.lambda_layer_arn] : []
 
   environment {
     variables = {

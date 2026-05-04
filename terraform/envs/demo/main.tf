@@ -96,6 +96,7 @@ module "slack" {
   project             = var.project_name
   execution_role_arn  = module.iam.lambda_agent_role_arn
   dynamodb_table_name = aws_dynamodb_table.incidents.name
+  lambda_layer_arn    = module.lambda.lambda_layer_arn
 }
 
 resource "aws_dynamodb_table" "incidents" {

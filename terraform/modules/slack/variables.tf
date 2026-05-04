@@ -13,3 +13,9 @@ variable "dynamodb_table_name" {
   type        = string
   default     = ""
 }
+
+variable "lambda_layer_arn" {
+  description = "Lambda layer ARN for shared dependencies"
+  type        = string
+  default     = ""
+}

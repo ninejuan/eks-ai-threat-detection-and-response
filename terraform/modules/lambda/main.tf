@@ -43,6 +43,16 @@ resource "aws_security_group_rule" "lambda_egress_https" {
   security_group_id = aws_security_group.lambda.id
 }
 
+resource "aws_lambda_layer_version" "dependencies" {
+  layer_name          = "${var.project}-dependencies"
+  filename            = "${path.module}/layer.zip"
+  compatible_runtimes = ["python3.12"]
+
+  lifecycle {
+    ignore_changes = [filename, source_code_hash]
+  }
+}
+
 resource "aws_lambda_function" "agent" {
   for_each = local.agents
 
@@ -53,6 +63,7 @@ resource "aws_lambda_function" "agent" {
   filename      = "${path.module}/placeholder.zip"
   timeout       = each.value.timeout
   memory_size   = each.value.memory_size
+  layers        = [aws_lambda_layer_version.dependencies.arn]
 
   vpc_config {
     subnet_ids         = var.private_subnet_ids
@@ -92,6 +103,7 @@ resource "aws_lambda_function" "ingestor" {
   filename      = "${path.module}/placeholder.zip"
   timeout       = 60
   memory_size   = 256
+  layers        = [aws_lambda_layer_version.dependencies.arn]
 
   reserved_concurrent_executions = 2
 
@@ -124,6 +136,7 @@ resource "aws_lambda_function" "degraded_notifier" {
   filename      = "${path.module}/placeholder.zip"
   timeout       = 30
   memory_size   = 256
+  layers        = [aws_lambda_layer_version.dependencies.arn]
 
   environment {
     variables = {

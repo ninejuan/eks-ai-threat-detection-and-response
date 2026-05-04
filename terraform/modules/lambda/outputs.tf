@@ -25,3 +25,7 @@ output "state_machine_arn" {
 output "lambda_security_group_id" {
   value = aws_security_group.lambda.id
 }
+
+output "lambda_layer_arn" {
+  value = aws_lambda_layer_version.dependencies.arn
+}
