@@ -33,7 +33,7 @@ platform-up:
 	helm repo add prometheus-community https://prometheus-community.github.io/helm-charts 2>/dev/null || true
 	helm repo add grafana https://grafana.github.io/helm-charts 2>/dev/null || true
 	helm repo add external-secrets https://charts.external-secrets.io 2>/dev/null || true
-	helm repo update
+	helm repo update eks falcosecurity cilium prometheus-community grafana external-secrets
 	@echo "--- AWS Load Balancer Controller ---"
 	$(HLM) upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller \
 		-n kube-system \
