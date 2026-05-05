@@ -1,6 +1,6 @@
 # ATDR 시스템 아키텍처
 
-> ATDR — AI 기반 EKS 위협 탐지 및 대응 시스템  
+> ATDR — AI 기반 EKS 위협 탐지 및 대응 시스템
 > 문서 버전: 0.1 | 작성일: 2026-05-04 | 대상 독자: 개발팀 (4인)
 
 ---
@@ -685,8 +685,8 @@ metadata:
   name: quarantine-nginx-pod
   namespace: app
   labels:
-    atdr.io/incident-id: "evt-20260504-a1b2c3d4"
-    atdr.io/auto-generated: "true"
+    atdr.juany.dev/incident-id: "evt-20260504-a1b2c3d4"
+    atdr.juany.dev/auto-generated: "true"
 spec:
   podSelector:
     matchLabels:

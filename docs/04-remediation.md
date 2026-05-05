@@ -179,8 +179,8 @@ metadata:
   name: isolate-compromised-pod
   namespace: production
   labels:
-    atdr.io/managed: "true"
-    atdr.io/incident-id: "inc-20260504-001"
+    atdr.juany.dev/managed: "true"
+    atdr.juany.dev/incident-id: "inc-20260504-001"
 spec:
   endpointSelector:
     matchLabels:
@@ -244,8 +244,8 @@ metadata:
   name: default-deny-all
   namespace: compromised-ns
   labels:
-    atdr.io/managed: "true"
-    atdr.io/incident-id: "inc-20260504-002"
+    atdr.juany.dev/managed: "true"
+    atdr.juany.dev/incident-id: "inc-20260504-002"
 spec:
   podSelector: {}   # 네임스페이스 내 모든 파드
   policyTypes:
@@ -294,7 +294,7 @@ kind: ClusterRoleBinding
 metadata:
   name: suspicious-admin-binding
   labels:
-    atdr.io/modified: "true"
+    atdr.juany.dev/modified: "true"
 subjects:
 - kind: ServiceAccount
   name: payment-service
@@ -557,12 +557,12 @@ metadata:
   name: isolate-compromised-pod
   namespace: production
   labels:
-    atdr.io/managed: "true"
-    atdr.io/incident-id: "inc-20260504-001"
-    atdr.io/action: "pod-isolation"
+    atdr.juany.dev/managed: "true"
+    atdr.juany.dev/incident-id: "inc-20260504-001"
+    atdr.juany.dev/action: "pod-isolation"
   annotations:
-    atdr.io/created-at: "2026-05-04T10:00:00Z"
-    atdr.io/expires-at: "2026-05-04T22:00:00Z"
+    atdr.juany.dev/created-at: "2026-05-04T10:00:00Z"
+    atdr.juany.dev/expires-at: "2026-05-04T22:00:00Z"
 spec:
   podSelector:
     matchLabels:
@@ -582,8 +582,8 @@ metadata:
   name: default-deny-all
   namespace: compromised-ns
   labels:
-    atdr.io/managed: "true"
-    atdr.io/action: "namespace-isolation"
+    atdr.juany.dev/managed: "true"
+    atdr.juany.dev/action: "namespace-isolation"
 spec:
   podSelector: {}
   policyTypes:
@@ -600,7 +600,7 @@ metadata:
   name: allow-monitoring-only
   namespace: compromised-ns
   labels:
-    atdr.io/managed: "true"
+    atdr.juany.dev/managed: "true"
 spec:
   podSelector: {}
   policyTypes:
@@ -623,9 +623,9 @@ kind: ClusterRoleBinding
 metadata:
   name: payment-service-binding
   labels:
-    atdr.io/modified: "true"
-    atdr.io/original-role: "cluster-admin"
-    atdr.io/incident-id: "inc-20260504-003"
+    atdr.juany.dev/modified: "true"
+    atdr.juany.dev/original-role: "cluster-admin"
+    atdr.juany.dev/incident-id: "inc-20260504-003"
 subjects:
 - kind: ServiceAccount
   name: payment-service
@@ -645,7 +645,7 @@ metadata:
   name: quarantine-readonly
   namespace: production
   labels:
-    atdr.io/managed: "true"
+    atdr.juany.dev/managed: "true"
 rules:
 - apiGroups: [""]
   resources: ["pods"]

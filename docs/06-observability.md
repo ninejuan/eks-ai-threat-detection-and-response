@@ -150,7 +150,7 @@ spec:
       - falco
   selector:
     matchLabels:
-      atdr.io/monitored: "true"
+      atdr.juany.dev/monitored: "true"
   endpoints:
     - port: metrics
       interval: 15s
@@ -169,7 +169,7 @@ metadata:
   namespace: atdr
   labels:
     app: ai-detector
-    atdr.io/monitored: "true"
+    atdr.juany.dev/monitored: "true"
 spec:
   ports:
     - name: metrics

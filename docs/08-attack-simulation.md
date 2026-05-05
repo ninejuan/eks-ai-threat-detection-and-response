@@ -142,10 +142,10 @@ metadata:
   name: crypto-sim-job
   namespace: attack-simulation
   labels:
-    atdr.io/simulation: "true"
-    atdr.io/scenario: "crypto-mining"
+    atdr.juany.dev/simulation: "true"
+    atdr.juany.dev/scenario: "crypto-mining"
   annotations:
-    atdr.io/ttl: "300"
+    atdr.juany.dev/ttl: "300"
 spec:
   ttlSecondsAfterFinished: 300
   template:
@@ -225,8 +225,8 @@ metadata:
   name: priv-esc-sim
   namespace: attack-simulation
   labels:
-    atdr.io/simulation: "true"
-    atdr.io/scenario: "privilege-escalation"
+    atdr.juany.dev/simulation: "true"
+    atdr.juany.dev/scenario: "privilege-escalation"
 spec:
   containers:
   - name: attacker
@@ -485,8 +485,8 @@ kubectl create namespace attack-simulation
 
 # 레이블 추가 (NetworkPolicy 셀렉터용)
 kubectl label namespace attack-simulation \
-    atdr.io/purpose=attack-simulation \
-    atdr.io/isolation=strict
+    atdr.juany.dev/purpose=attack-simulation \
+    atdr.juany.dev/isolation=strict
 ```
 
 ### NetworkPolicy: 외부 통신 차단
@@ -545,7 +545,7 @@ spec:
 ```bash
 # 시뮬레이션 후 수동 정리 (TTL 만료 전 즉시 정리 필요 시)
 kubectl delete all -n attack-simulation \
--l atdr.io/simulation=true
+-l atdr.juany.dev/simulation=true
 
 # 네임스페이스 전체 정리 (시뮬레이션 세션 종료 시)
 kubectl delete namespace attack-simulation
@@ -607,8 +607,8 @@ metadata:
   name: crypto-sim-job
   namespace: attack-simulation
   labels:
-    atdr.io/simulation: "true"
-    atdr.io/scenario: "crypto-mining"
+    atdr.juany.dev/simulation: "true"
+    atdr.juany.dev/scenario: "crypto-mining"
 spec:
   ttlSecondsAfterFinished: 300
   template:
@@ -702,7 +702,7 @@ echo "Time to Remediation: ~60sec (after approval)"
 # 시뮬레이션 리소스 정리
 kubectl delete job crypto-sim-job -n attack-simulation --ignore-not-found
 kubectl delete networkpolicy -n attack-simulation \
--l atdr.io/simulation=true --ignore-not-found
+-l atdr.juany.dev/simulation=true --ignore-not-found
 
 # 인시던트 레코드 보존 (평가 데이터로 활용)
 echo "Incident records preserved in DynamoDB for evaluation"
