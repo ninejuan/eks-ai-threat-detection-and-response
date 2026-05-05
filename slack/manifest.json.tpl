@@ -23,7 +23,8 @@
       "bot": [
         "chat:write",
         "commands",
-        "incoming-webhook"
+        "incoming-webhook",
+        "channels:history"
       ]
     }
   },
