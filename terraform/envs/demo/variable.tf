@@ -21,3 +21,9 @@ variable "endpoint_public_access_cidrs" {
   type        = list(string)
   default     = ["0.0.0.0/0"]
 }
+
+variable "admin_principal_arn" {
+  description = "IAM principal ARN (user or role) to grant EKS cluster admin access. Defaults to current caller."
+  type        = string
+  default     = ""
+}

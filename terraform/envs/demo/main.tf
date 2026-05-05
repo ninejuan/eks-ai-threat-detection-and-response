@@ -1,7 +1,8 @@
 data "aws_caller_identity" "current" {}
 
 locals {
-  account_id = data.aws_caller_identity.current.account_id
+  account_id      = data.aws_caller_identity.current.account_id
+  admin_principal = var.admin_principal_arn != "" ? var.admin_principal_arn : data.aws_caller_identity.current.arn
   common_tags = {
     Environment = var.environment
     Project     = var.project_name
@@ -47,7 +48,7 @@ module "eks" {
   cluster_name                 = "${var.project_name}-${var.environment}"
   cluster_role_arn             = module.iam.eks_cluster_role_arn
   node_role_arn                = module.iam.eks_node_role_arn
-  admin_role_arn               = module.iam.eks_cluster_role_arn
+  admin_role_arn               = local.admin_principal
   falco_pod_role_arn           = module.iam.falco_pod_role_arn
   external_secrets_role_arn    = module.iam.external_secrets_role_arn
   aws_lb_controller_role_arn   = module.iam.aws_lb_controller_role_arn
