@@ -42,3 +42,9 @@ variable "aws_lb_controller_role_arn" {
   description = "IAM role ARN for AWS Load Balancer Controller Pod Identity"
   type        = string
 }
+
+variable "endpoint_public_access_cidrs" {
+  description = "CIDR blocks allowed to access the EKS public endpoint"
+  type        = list(string)
+  default     = ["0.0.0.0/0"]
+}

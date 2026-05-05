@@ -1,6 +1,9 @@
 TF_DIR := terraform/envs/demo
 CLUSTER := atdr-demo
 REGION := ap-northeast-2
+KUBE_CONTEXT := arn:aws:eks:$(REGION):$(shell aws sts get-caller-identity --query Account --output text 2>/dev/null):cluster/$(CLUSTER)
+KUBECTL := kubectl --context=$(KUBE_CONTEXT)
+HELM := helm --kube-context=$(KUBE_CONTEXT)
 LAMBDA_MODULE := terraform/modules/lambda
 LAYER_DIR := build/layer/python
 
@@ -40,7 +43,7 @@ lint-fix:
 test:
 	PYTHONPATH=. pytest tests/ -v --tb=short
 
-.PHONY: build build-layer build-lambdas build-all
+.PHONY: build build-layer build-lambdas
 
 build-layer:
 	@echo "Building Lambda layer..."
@@ -65,15 +68,48 @@ build-lambdas:
 build: build-layer build-lambdas
 	@echo "Build complete."
 
-.PHONY: deploy deploy-infra deploy-k8s
+.PHONY: deploy deploy-infra deploy-k8s deploy-lambdas
 
 deploy-infra: build
 	cd $(TF_DIR) && terraform apply -auto-approve
 
-deploy-k8s:
+deploy-lambdas: build-lambdas
+	@echo "Deploying Lambda functions..."
+	@for agent in summary triage solution remediation; do \
+		echo "  Deploying $$agent agent..."; \
+		aws lambda update-function-code \
+			--function-name atdr-$$agent-agent \
+			--zip-file fileb://$(LAMBDA_MODULE)/$$agent.zip \
+			--region $(REGION) --no-cli-pager; \
+	done
+	@aws lambda update-function-code \
+		--function-name atdr-ingestor \
+		--zip-file fileb://$(LAMBDA_MODULE)/ingestor.zip \
+		--region $(REGION) --no-cli-pager
+	@aws lambda update-function-code \
+		--function-name atdr-degraded-notifier \
+		--zip-file fileb://$(LAMBDA_MODULE)/degraded_notifier.zip \
+		--region $(REGION) --no-cli-pager
+	@aws lambda update-function-code \
+		--function-name atdr-slack-bot \
+		--zip-file fileb://terraform/modules/slack/slack_bot.zip \
+		--region $(REGION) --no-cli-pager
+	@echo "Lambda deployment complete."
+
+deploy-layer: build-layer
+	@echo "Deploying Lambda layer..."
+	@aws lambda publish-layer-version \
+		--layer-name atdr-dependencies \
+		--zip-file fileb://$(LAMBDA_MODULE)/layer.zip \
+		--compatible-runtimes python3.12 \
+		--region $(REGION) --no-cli-pager
+	@echo "Layer deployed."
+
+deploy-k8s: kubeconfig
+	@echo "=== Deploying Kubernetes components (context: $(KUBE_CONTEXT)) ==="
 	@echo "Installing AWS Load Balancer Controller..."
 	helm repo add eks https://aws.github.io/eks-charts 2>/dev/null || true
-	helm upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller \
+	$(HELM) upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller \
 		-n kube-system \
 		--set clusterName=$(CLUSTER) \
 		--set serviceAccount.create=true \
@@ -82,37 +118,92 @@ deploy-k8s:
 		--set vpcId=$$(aws eks describe-cluster --name $(CLUSTER) --region $(REGION) --query 'cluster.resourcesVpcConfig.vpcId' --output text)
 	@echo "Installing Falco..."
 	helm repo add falcosecurity https://falcosecurity.github.io/charts 2>/dev/null || true
-	helm upgrade --install falco falcosecurity/falco \
+	$(HELM) upgrade --install falco falcosecurity/falco \
 		-n falco --create-namespace \
 		-f kubernetes/falco/values.yaml
 	@echo "Installing Tetragon..."
 	helm repo add cilium https://helm.cilium.io 2>/dev/null || true
-	helm upgrade --install tetragon cilium/tetragon \
+	$(HELM) upgrade --install tetragon cilium/tetragon \
 		-n tetragon --create-namespace
-	kubectl apply -f kubernetes/tetragon/tracing-policies.yaml
+	$(KUBECTL) apply -f kubernetes/tetragon/tracing-policies.yaml
 	@echo "Installing kube-prometheus-stack..."
 	helm repo add prometheus-community https://prometheus-community.github.io/helm-charts 2>/dev/null || true
-	helm upgrade --install monitoring prometheus-community/kube-prometheus-stack \
+	$(HELM) upgrade --install monitoring prometheus-community/kube-prometheus-stack \
 		-n monitoring --create-namespace \
 		-f kubernetes/monitoring/kube-prometheus-stack-values.yaml
 	@echo "Installing Loki..."
 	helm repo add grafana https://grafana.github.io/helm-charts 2>/dev/null || true
-	helm upgrade --install loki grafana/loki \
+	$(HELM) upgrade --install loki grafana/loki \
 		-n monitoring \
 		-f kubernetes/monitoring/loki-values.yaml
 	@echo "Applying Grafana Ingress..."
-	kubectl apply -f kubernetes/monitoring/grafana-ingress.yaml
+	$(KUBECTL) apply -f kubernetes/monitoring/grafana-ingress.yaml
 	@echo "Installing External Secrets Operator..."
 	helm repo add external-secrets https://charts.external-secrets.io 2>/dev/null || true
-	helm upgrade --install external-secrets external-secrets/external-secrets \
+	$(HELM) upgrade --install external-secrets external-secrets/external-secrets \
 		-n external-secrets --create-namespace
-	kubectl apply -f kubernetes/external-secrets/external-secrets.yaml
+	$(KUBECTL) apply -f kubernetes/external-secrets/external-secrets.yaml
 	@echo "Applying admission policies..."
-	kubectl apply -f kubernetes/admission-policies/policies.yaml
-	@echo "Kubernetes deployment complete."
+	$(KUBECTL) apply -f kubernetes/admission-policies/policies.yaml
+	@echo "=== Kubernetes deployment complete ==="
 
 deploy: deploy-infra deploy-k8s
 	@echo "Full deployment complete."
+
+.PHONY: kubeconfig
+
+kubeconfig:
+	@aws eks update-kubeconfig \
+		--name $(CLUSTER) \
+		--region $(REGION) \
+		--alias $(CLUSTER)
+	@echo "kubeconfig updated. Context: $(KUBE_CONTEXT)"
+
+.PHONY: secrets secrets-slack secrets-mcp
+
+secrets:
+	@echo "=== ATDR Secrets Setup ==="
+	@echo ""
+	@read -p "Slack Bot Token (xoxb-...): " token && \
+		read -p "Slack Webhook URL: " webhook && \
+		aws secretsmanager put-secret-value \
+			--secret-id atdr/slack/bot-token \
+			--secret-string "{\"token\":\"$$token\",\"webhook_url\":\"$$webhook\"}" \
+			--region $(REGION) --no-cli-pager && \
+		echo "  atdr/slack/bot-token: set"
+	@echo ""
+	@read -p "Slack Signing Secret: " secret && \
+		aws secretsmanager put-secret-value \
+			--secret-id atdr/slack/signing-secret \
+			--secret-string "{\"secret\":\"$$secret\"}" \
+			--region $(REGION) --no-cli-pager && \
+		echo "  atdr/slack/signing-secret: set"
+	@echo ""
+	@read -p "MCP Auth Token: " mcp_token && \
+		aws secretsmanager put-secret-value \
+			--secret-id atdr/mcp/auth-token \
+			--secret-string "{\"token\":\"$$mcp_token\"}" \
+			--region $(REGION) --no-cli-pager && \
+		echo "  atdr/mcp/auth-token: set"
+	@echo ""
+	@echo "=== All secrets configured ==="
+
+secrets-slack:
+	@read -p "Slack Bot Token (xoxb-...): " token && \
+		read -p "Slack Webhook URL: " webhook && \
+		aws secretsmanager put-secret-value \
+			--secret-id atdr/slack/bot-token \
+			--secret-string "{\"token\":\"$$token\",\"webhook_url\":\"$$webhook\"}" \
+			--region $(REGION) --no-cli-pager && \
+		echo "Done."
+
+secrets-mcp:
+	@read -p "MCP Auth Token: " mcp_token && \
+		aws secretsmanager put-secret-value \
+			--secret-id atdr/mcp/auth-token \
+			--secret-string "{\"token\":\"$$mcp_token\"}" \
+			--region $(REGION) --no-cli-pager && \
+		echo "Done."
 
 .PHONY: scale-down scale-up scale-status
 
@@ -165,11 +256,32 @@ backup-db:
 		--backup-name "atdr-approval-audit-$$(date +%Y%m%d-%H%M%S)" \
 		--region $(REGION) 2>/dev/null && echo "  approval-audit: done" || echo "  approval-audit: skipped"
 
+.PHONY: status
+
+status: kubeconfig
+	@echo "=== ATDR Status ==="
+	@echo ""
+	@echo "--- EKS Cluster ---"
+	@aws eks describe-cluster --name $(CLUSTER) --region $(REGION) \
+		--query 'cluster.{status:status,version:version,endpoint:endpoint}' \
+		--output table 2>/dev/null || echo "  Cluster not found"
+	@echo ""
+	@echo "--- Node Groups ---"
+	@$(MAKE) -s scale-status
+	@echo ""
+	@echo "--- Pods (all namespaces) ---"
+	@$(KUBECTL) get pods -A --no-headers 2>/dev/null | awk '{print $$1}' | sort | uniq -c | sort -rn || echo "  Cannot connect"
+	@echo ""
+	@echo "--- Grafana URL ---"
+	@$(KUBECTL) get ingress grafana -n monitoring -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null && echo "" || echo "  Not available"
+
 .PHONY: clean
 
 clean:
 	rm -rf build/
 	rm -rf terraform/modules/lambda/*.zip
 	rm -rf terraform/modules/slack/*.zip
+	rm -rf terraform/envs/demo/.terraform
+	rm -rf terraform/envs/demo/.terraform.lock.hcl
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 	find . -type d -name .pytest_cache -exec rm -rf {} + 2>/dev/null || true

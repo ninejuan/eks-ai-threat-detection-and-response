@@ -1,5 +1,5 @@
-# Environment metadata
-environment  = "your-env"
-project_name = "terraform-work-starter"
+environment  = "demo"
+project_name = "atdr"
 region       = "ap-northeast-2"
-prefix       = "sigmoid"
+
+endpoint_public_access_cidrs = ["0.0.0.0/0"]  # Restrict to team IPs in production

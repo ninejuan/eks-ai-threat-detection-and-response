@@ -15,3 +15,9 @@ variable "region" {
   type        = string
   default     = "ap-northeast-2"
 }
+
+variable "endpoint_public_access_cidrs" {
+  description = "CIDR blocks allowed to access the EKS public endpoint (e.g. team IPs)"
+  type        = list(string)
+  default     = ["0.0.0.0/0"]
+}
