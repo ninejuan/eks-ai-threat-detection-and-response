@@ -1,33 +1,210 @@
-TF_DIR := terraform/envs/demo
-CLUSTER := atdr-demo
-REGION := ap-northeast-2
-KUBE_CONTEXT := arn:aws:eks:$(REGION):$(shell aws sts get-caller-identity --query Account --output text 2>/dev/null):cluster/$(CLUSTER)
-KUBECTL := kubectl --context=$(KUBE_CONTEXT)
-HELM := helm --kube-context=$(KUBE_CONTEXT)
-LAMBDA_MODULE := terraform/modules/lambda
-LAYER_DIR := build/layer/python
+CLUSTER_NAME ?= atdr-demo
+REGION       ?= ap-northeast-2
+AWS_ACCOUNT  ?= $(shell aws sts get-caller-identity --query Account --output text 2>/dev/null)
+TF_DIR       := terraform/envs/demo
+KCTL         := kubectl --context $(CLUSTER_NAME)
+HLM          := helm --kube-context $(CLUSTER_NAME)
+LAMBDA_MOD   := terraform/modules/lambda
+LAYER_DIR    := build/layer/python
 
-.PHONY: init plan apply destroy fmt validate
+.PHONY: infra-up infra-down platform-up platform-down deploy-lambdas deploy-layer \
+        all-up all-down status lint lint-fix test build build-layer build-lambdas \
+        secrets scale-down scale-up scale-status backup-db clean
 
-init:
-	cd $(TF_DIR) && terraform init
+## ─── Infrastructure ──────────────────────────────────────────────
 
-plan:
-	cd $(TF_DIR) && terraform plan
+infra-up: build
+	cd $(TF_DIR) && terraform init && terraform apply -auto-approve
+	aws eks update-kubeconfig --name $(CLUSTER_NAME) --region $(REGION) --alias $(CLUSTER_NAME)
+	@echo "Context created: $(CLUSTER_NAME)"
 
-apply:
-	cd $(TF_DIR) && terraform apply
+infra-down:
+	$(MAKE) platform-down || true
+	cd $(TF_DIR) && terraform destroy -auto-approve
 
-destroy:
-	cd $(TF_DIR) && terraform destroy
+## ─── Platform (Kubernetes components) ────────────────────────────
 
-fmt:
-	terraform fmt -recursive terraform/
+platform-up:
+	@echo "=== Installing platform components (context: $(CLUSTER_NAME)) ==="
+	helm repo add eks https://aws.github.io/eks-charts 2>/dev/null || true
+	helm repo add falcosecurity https://falcosecurity.github.io/charts 2>/dev/null || true
+	helm repo add cilium https://helm.cilium.io 2>/dev/null || true
+	helm repo add prometheus-community https://prometheus-community.github.io/helm-charts 2>/dev/null || true
+	helm repo add grafana https://grafana.github.io/helm-charts 2>/dev/null || true
+	helm repo add external-secrets https://charts.external-secrets.io 2>/dev/null || true
+	helm repo update
+	@echo "--- AWS Load Balancer Controller ---"
+	$(HLM) upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller \
+		-n kube-system \
+		--set clusterName=$(CLUSTER_NAME) \
+		--set serviceAccount.create=true \
+		--set serviceAccount.name=aws-load-balancer-controller \
+		--set region=$(REGION) \
+		--set vpcId=$$(aws eks describe-cluster --name $(CLUSTER_NAME) --region $(REGION) --query 'cluster.resourcesVpcConfig.vpcId' --output text)
+	@echo "--- Falco ---"
+	$(HLM) upgrade --install falco falcosecurity/falco \
+		-n falco --create-namespace \
+		-f kubernetes/falco/values.yaml
+	@echo "--- Tetragon ---"
+	$(HLM) upgrade --install tetragon cilium/tetragon \
+		-n tetragon --create-namespace
+	$(KCTL) apply -f kubernetes/tetragon/tracing-policies.yaml
+	@echo "--- kube-prometheus-stack ---"
+	$(HLM) upgrade --install monitoring prometheus-community/kube-prometheus-stack \
+		-n monitoring --create-namespace \
+		-f kubernetes/monitoring/kube-prometheus-stack-values.yaml
+	@echo "--- Loki ---"
+	$(HLM) upgrade --install loki grafana/loki \
+		-n monitoring \
+		-f kubernetes/monitoring/loki-values.yaml
+	@echo "--- Grafana Ingress ---"
+	$(KCTL) apply -f kubernetes/monitoring/grafana-ingress.yaml
+	@echo "--- External Secrets Operator ---"
+	$(HLM) upgrade --install external-secrets external-secrets/external-secrets \
+		-n external-secrets --create-namespace
+	$(KCTL) apply -f kubernetes/external-secrets/external-secrets.yaml
+	@echo "--- Admission Policies ---"
+	$(KCTL) apply -f kubernetes/admission-policies/policies.yaml
+	@echo "=== Platform deployment complete ==="
 
-validate:
-	cd $(TF_DIR) && terraform validate
+platform-down:
+	$(HLM) uninstall external-secrets -n external-secrets || true
+	$(HLM) uninstall loki -n monitoring || true
+	$(HLM) uninstall monitoring -n monitoring || true
+	$(HLM) uninstall tetragon -n tetragon || true
+	$(HLM) uninstall falco -n falco || true
+	$(HLM) uninstall aws-load-balancer-controller -n kube-system || true
+	$(KCTL) delete -f kubernetes/admission-policies/policies.yaml --ignore-not-found
+	$(KCTL) delete -f kubernetes/tetragon/tracing-policies.yaml --ignore-not-found
+	$(KCTL) delete -f kubernetes/external-secrets/external-secrets.yaml --ignore-not-found
+	$(KCTL) delete -f kubernetes/monitoring/grafana-ingress.yaml --ignore-not-found
 
-.PHONY: lint test lint-fix
+## ─── Lambda Deployment ───────────────────────────────────────────
+
+deploy-lambdas: build-lambdas
+	@echo "Deploying Lambda functions..."
+	@for agent in summary triage solution remediation; do \
+		echo "  $$agent-agent"; \
+		aws lambda update-function-code \
+			--function-name atdr-$$agent-agent \
+			--zip-file fileb://$(LAMBDA_MOD)/$$agent.zip \
+			--region $(REGION) --no-cli-pager; \
+	done
+	@aws lambda update-function-code \
+		--function-name atdr-ingestor \
+		--zip-file fileb://$(LAMBDA_MOD)/ingestor.zip \
+		--region $(REGION) --no-cli-pager
+	@aws lambda update-function-code \
+		--function-name atdr-degraded-notifier \
+		--zip-file fileb://$(LAMBDA_MOD)/degraded_notifier.zip \
+		--region $(REGION) --no-cli-pager
+	@aws lambda update-function-code \
+		--function-name atdr-slack-bot \
+		--zip-file fileb://terraform/modules/slack/slack_bot.zip \
+		--region $(REGION) --no-cli-pager
+	@echo "Done."
+
+deploy-layer: build-layer
+	@aws lambda publish-layer-version \
+		--layer-name atdr-dependencies \
+		--zip-file fileb://$(LAMBDA_MOD)/layer.zip \
+		--compatible-runtimes python3.12 \
+		--region $(REGION) --no-cli-pager
+	@echo "Layer published."
+
+## ─── Full Lifecycle ──────────────────────────────────────────────
+
+all-up: infra-up platform-up
+	@echo "Full deployment complete."
+
+all-down:
+	$(MAKE) platform-down || true
+	$(MAKE) infra-down
+
+## ─── Secrets ─────────────────────────────────────────────────────
+
+secrets:
+	@echo "=== ATDR Secrets Setup ==="
+	@read -p "Slack Bot Token (xoxb-...): " token && \
+		read -p "Slack Webhook URL: " webhook && \
+		aws secretsmanager put-secret-value \
+			--secret-id atdr/slack/bot-token \
+			--secret-string "{\"token\":\"$$token\",\"webhook_url\":\"$$webhook\"}" \
+			--region $(REGION) --no-cli-pager && \
+		echo "  atdr/slack/bot-token: done"
+	@read -p "Slack Signing Secret: " secret && \
+		aws secretsmanager put-secret-value \
+			--secret-id atdr/slack/signing-secret \
+			--secret-string "{\"secret\":\"$$secret\"}" \
+			--region $(REGION) --no-cli-pager && \
+		echo "  atdr/slack/signing-secret: done"
+	@read -p "MCP Auth Token: " mcp_token && \
+		aws secretsmanager put-secret-value \
+			--secret-id atdr/mcp/auth-token \
+			--secret-string "{\"token\":\"$$mcp_token\"}" \
+			--region $(REGION) --no-cli-pager && \
+		echo "  atdr/mcp/auth-token: done"
+	@echo "=== All secrets configured ==="
+
+## ─── Scaling ─────────────────────────────────────────────────────
+
+scale-down:
+	@for ng in $$(aws eks list-nodegroups --cluster-name $(CLUSTER_NAME) --region $(REGION) --query 'nodegroups[]' --output text 2>/dev/null); do \
+		echo "  $$ng -> 0"; \
+		aws eks update-nodegroup-config \
+			--cluster-name $(CLUSTER_NAME) \
+			--nodegroup-name $$ng \
+			--region $(REGION) \
+			--scaling-config minSize=0,maxSize=4,desiredSize=0; \
+	done
+	@echo "Nodes will terminate in ~5 minutes."
+
+scale-up:
+	@for ng in $$(aws eks list-nodegroups --cluster-name $(CLUSTER_NAME) --region $(REGION) --query 'nodegroups[]' --output text 2>/dev/null); do \
+		echo "  $$ng -> 2"; \
+		aws eks update-nodegroup-config \
+			--cluster-name $(CLUSTER_NAME) \
+			--nodegroup-name $$ng \
+			--region $(REGION) \
+			--scaling-config minSize=1,maxSize=4,desiredSize=2; \
+	done
+	@echo "Nodes will be ready in ~5 minutes."
+
+scale-status:
+	@aws eks list-nodegroups --cluster-name $(CLUSTER_NAME) --region $(REGION) --query 'nodegroups[]' --output text 2>/dev/null | \
+		tr '\t' '\n' | while read ng; do \
+			echo "$$ng:"; \
+			aws eks describe-nodegroup \
+				--cluster-name $(CLUSTER_NAME) \
+				--nodegroup-name $$ng \
+				--region $(REGION) \
+				--query 'nodegroup.{desired:scalingConfig.desiredSize,min:scalingConfig.minSize,max:scalingConfig.maxSize,status:status}' \
+				--output table 2>/dev/null; \
+		done
+
+## ─── Build ───────────────────────────────────────────────────────
+
+build: build-layer build-lambdas
+	@echo "Build complete."
+
+build-layer:
+	@rm -rf build/layer
+	@mkdir -p $(LAYER_DIR)
+	@pip install -r requirements.txt -t $(LAYER_DIR) --quiet
+	@cd build/layer && zip -r ../../$(LAMBDA_MOD)/layer.zip python -q
+	@echo "Layer: $(LAMBDA_MOD)/layer.zip"
+
+build-lambdas:
+	@for agent in summary triage solution remediation; do \
+		cd app/agents/$$agent && zip -r ../../../$(LAMBDA_MOD)/$$agent.zip *.py -q && cd ../../..; \
+	done
+	@cd app/ingestor && zip -r ../../$(LAMBDA_MOD)/ingestor.zip *.py -q && cd ../..
+	@cd app/degraded_notifier && zip -r ../../$(LAMBDA_MOD)/degraded_notifier.zip *.py -q && cd ../..
+	@cd app/slack_bot && zip -r ../../terraform/modules/slack/slack_bot.zip *.py -q && cd ../..
+	@cd app/shared && zip -r ../../$(LAMBDA_MOD)/shared.zip *.py -q && cd ../..
+	@echo "Lambdas packaged."
+
+## ─── Quality ─────────────────────────────────────────────────────
 
 lint:
 	ruff check app/
@@ -43,245 +220,32 @@ lint-fix:
 test:
 	PYTHONPATH=. pytest tests/ -v --tb=short
 
-.PHONY: build build-layer build-lambdas
+## ─── Status ──────────────────────────────────────────────────────
 
-build-layer:
-	@echo "Building Lambda layer..."
-	@rm -rf build/layer
-	@mkdir -p $(LAYER_DIR)
-	@pip install -r requirements.txt -t $(LAYER_DIR) --quiet
-	@cd build/layer && zip -r ../../$(LAMBDA_MODULE)/layer.zip python -q
-	@echo "Layer built: $(LAMBDA_MODULE)/layer.zip"
+status:
+	@echo "=== Nodes ==="
+	@$(KCTL) get nodes -o wide 2>/dev/null || echo "kubeconfig not set"
+	@echo "\n=== Pods (non-Running) ==="
+	@$(KCTL) get pods -A --field-selector=status.phase!=Running 2>/dev/null || true
+	@echo "\n=== Grafana URL ==="
+	@$(KCTL) get ingress grafana -n monitoring -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null && echo "" || echo "  not available"
 
-build-lambdas:
-	@echo "Building Lambda deployment packages..."
-	@for agent in summary triage solution remediation; do \
-		echo "  Packaging $$agent agent..."; \
-		cd app/agents/$$agent && zip -r ../../../$(LAMBDA_MODULE)/$$agent.zip *.py -q && cd ../../..; \
-	done
-	@cd app/ingestor && zip -r ../../$(LAMBDA_MODULE)/ingestor.zip *.py -q && cd ../..
-	@cd app/degraded_notifier && zip -r ../../$(LAMBDA_MODULE)/degraded_notifier.zip *.py -q && cd ../..
-	@cd app/slack_bot && zip -r ../../terraform/modules/slack/slack_bot.zip *.py -q && cd ../..
-	@cd app/shared && zip -r ../../$(LAMBDA_MODULE)/shared.zip *.py -q && cd ../..
-	@echo "Lambda packages built."
-
-build: build-layer build-lambdas
-	@echo "Build complete."
-
-.PHONY: deploy deploy-infra deploy-k8s deploy-lambdas
-
-deploy-infra: build
-	cd $(TF_DIR) && terraform apply -auto-approve
-
-deploy-lambdas: build-lambdas
-	@echo "Deploying Lambda functions..."
-	@for agent in summary triage solution remediation; do \
-		echo "  Deploying $$agent agent..."; \
-		aws lambda update-function-code \
-			--function-name atdr-$$agent-agent \
-			--zip-file fileb://$(LAMBDA_MODULE)/$$agent.zip \
-			--region $(REGION) --no-cli-pager; \
-	done
-	@aws lambda update-function-code \
-		--function-name atdr-ingestor \
-		--zip-file fileb://$(LAMBDA_MODULE)/ingestor.zip \
-		--region $(REGION) --no-cli-pager
-	@aws lambda update-function-code \
-		--function-name atdr-degraded-notifier \
-		--zip-file fileb://$(LAMBDA_MODULE)/degraded_notifier.zip \
-		--region $(REGION) --no-cli-pager
-	@aws lambda update-function-code \
-		--function-name atdr-slack-bot \
-		--zip-file fileb://terraform/modules/slack/slack_bot.zip \
-		--region $(REGION) --no-cli-pager
-	@echo "Lambda deployment complete."
-
-deploy-layer: build-layer
-	@echo "Deploying Lambda layer..."
-	@aws lambda publish-layer-version \
-		--layer-name atdr-dependencies \
-		--zip-file fileb://$(LAMBDA_MODULE)/layer.zip \
-		--compatible-runtimes python3.12 \
-		--region $(REGION) --no-cli-pager
-	@echo "Layer deployed."
-
-deploy-k8s: kubeconfig
-	@echo "=== Deploying Kubernetes components (context: $(KUBE_CONTEXT)) ==="
-	@echo "Installing AWS Load Balancer Controller..."
-	helm repo add eks https://aws.github.io/eks-charts 2>/dev/null || true
-	$(HELM) upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller \
-		-n kube-system \
-		--set clusterName=$(CLUSTER) \
-		--set serviceAccount.create=true \
-		--set serviceAccount.name=aws-load-balancer-controller \
-		--set region=$(REGION) \
-		--set vpcId=$$(aws eks describe-cluster --name $(CLUSTER) --region $(REGION) --query 'cluster.resourcesVpcConfig.vpcId' --output text)
-	@echo "Installing Falco..."
-	helm repo add falcosecurity https://falcosecurity.github.io/charts 2>/dev/null || true
-	$(HELM) upgrade --install falco falcosecurity/falco \
-		-n falco --create-namespace \
-		-f kubernetes/falco/values.yaml
-	@echo "Installing Tetragon..."
-	helm repo add cilium https://helm.cilium.io 2>/dev/null || true
-	$(HELM) upgrade --install tetragon cilium/tetragon \
-		-n tetragon --create-namespace
-	$(KUBECTL) apply -f kubernetes/tetragon/tracing-policies.yaml
-	@echo "Installing kube-prometheus-stack..."
-	helm repo add prometheus-community https://prometheus-community.github.io/helm-charts 2>/dev/null || true
-	$(HELM) upgrade --install monitoring prometheus-community/kube-prometheus-stack \
-		-n monitoring --create-namespace \
-		-f kubernetes/monitoring/kube-prometheus-stack-values.yaml
-	@echo "Installing Loki..."
-	helm repo add grafana https://grafana.github.io/helm-charts 2>/dev/null || true
-	$(HELM) upgrade --install loki grafana/loki \
-		-n monitoring \
-		-f kubernetes/monitoring/loki-values.yaml
-	@echo "Applying Grafana Ingress..."
-	$(KUBECTL) apply -f kubernetes/monitoring/grafana-ingress.yaml
-	@echo "Installing External Secrets Operator..."
-	helm repo add external-secrets https://charts.external-secrets.io 2>/dev/null || true
-	$(HELM) upgrade --install external-secrets external-secrets/external-secrets \
-		-n external-secrets --create-namespace
-	$(KUBECTL) apply -f kubernetes/external-secrets/external-secrets.yaml
-	@echo "Applying admission policies..."
-	$(KUBECTL) apply -f kubernetes/admission-policies/policies.yaml
-	@echo "=== Kubernetes deployment complete ==="
-
-deploy: deploy-infra deploy-k8s
-	@echo "Full deployment complete."
-
-.PHONY: kubeconfig
-
-kubeconfig:
-	@aws eks update-kubeconfig \
-		--name $(CLUSTER) \
-		--region $(REGION) \
-		--alias $(CLUSTER)
-	@echo "kubeconfig updated. Context: $(KUBE_CONTEXT)"
-
-.PHONY: secrets secrets-slack secrets-mcp
-
-secrets:
-	@echo "=== ATDR Secrets Setup ==="
-	@echo ""
-	@read -p "Slack Bot Token (xoxb-...): " token && \
-		read -p "Slack Webhook URL: " webhook && \
-		aws secretsmanager put-secret-value \
-			--secret-id atdr/slack/bot-token \
-			--secret-string "{\"token\":\"$$token\",\"webhook_url\":\"$$webhook\"}" \
-			--region $(REGION) --no-cli-pager && \
-		echo "  atdr/slack/bot-token: set"
-	@echo ""
-	@read -p "Slack Signing Secret: " secret && \
-		aws secretsmanager put-secret-value \
-			--secret-id atdr/slack/signing-secret \
-			--secret-string "{\"secret\":\"$$secret\"}" \
-			--region $(REGION) --no-cli-pager && \
-		echo "  atdr/slack/signing-secret: set"
-	@echo ""
-	@read -p "MCP Auth Token: " mcp_token && \
-		aws secretsmanager put-secret-value \
-			--secret-id atdr/mcp/auth-token \
-			--secret-string "{\"token\":\"$$mcp_token\"}" \
-			--region $(REGION) --no-cli-pager && \
-		echo "  atdr/mcp/auth-token: set"
-	@echo ""
-	@echo "=== All secrets configured ==="
-
-secrets-slack:
-	@read -p "Slack Bot Token (xoxb-...): " token && \
-		read -p "Slack Webhook URL: " webhook && \
-		aws secretsmanager put-secret-value \
-			--secret-id atdr/slack/bot-token \
-			--secret-string "{\"token\":\"$$token\",\"webhook_url\":\"$$webhook\"}" \
-			--region $(REGION) --no-cli-pager && \
-		echo "Done."
-
-secrets-mcp:
-	@read -p "MCP Auth Token: " mcp_token && \
-		aws secretsmanager put-secret-value \
-			--secret-id atdr/mcp/auth-token \
-			--secret-string "{\"token\":\"$$mcp_token\"}" \
-			--region $(REGION) --no-cli-pager && \
-		echo "Done."
-
-.PHONY: scale-down scale-up scale-status
-
-scale-down:
-	@echo "Scaling all node groups to 0..."
-	@for ng in $$(aws eks list-nodegroups --cluster-name $(CLUSTER) --region $(REGION) --query 'nodegroups[]' --output text 2>/dev/null); do \
-		echo "  $$ng -> 0"; \
-		aws eks update-nodegroup-config \
-			--cluster-name $(CLUSTER) \
-			--nodegroup-name $$ng \
-			--region $(REGION) \
-			--scaling-config minSize=0,maxSize=4,desiredSize=0; \
-	done
-	@echo "Done. Nodes will terminate in ~5 minutes."
-
-scale-up:
-	@echo "Scaling all node groups to desired size..."
-	@for ng in $$(aws eks list-nodegroups --cluster-name $(CLUSTER) --region $(REGION) --query 'nodegroups[]' --output text 2>/dev/null); do \
-		echo "  $$ng -> 2"; \
-		aws eks update-nodegroup-config \
-			--cluster-name $(CLUSTER) \
-			--nodegroup-name $$ng \
-			--region $(REGION) \
-			--scaling-config minSize=1,maxSize=4,desiredSize=2; \
-	done
-	@echo "Done. Nodes will be ready in ~5 minutes."
-
-scale-status:
-	@aws eks list-nodegroups --cluster-name $(CLUSTER) --region $(REGION) --query 'nodegroups[]' --output text 2>/dev/null | \
-		tr '\t' '\n' | while read ng; do \
-			echo "$$ng:"; \
-			aws eks describe-nodegroup \
-				--cluster-name $(CLUSTER) \
-				--nodegroup-name $$ng \
-				--region $(REGION) \
-				--query 'nodegroup.{desired:scalingConfig.desiredSize,min:scalingConfig.minSize,max:scalingConfig.maxSize,status:status}' \
-				--output table 2>/dev/null; \
-		done
-
-.PHONY: backup-db
+## ─── Utilities ───────────────────────────────────────────────────
 
 backup-db:
-	@echo "Creating DynamoDB backups..."
 	@aws dynamodb create-backup \
 		--table-name atdr-incidents \
 		--backup-name "atdr-incidents-$$(date +%Y%m%d-%H%M%S)" \
-		--region $(REGION) 2>/dev/null && echo "  incidents: done" || echo "  incidents: skipped"
+		--region $(REGION) 2>/dev/null && echo "incidents: done" || echo "incidents: skipped"
 	@aws dynamodb create-backup \
 		--table-name atdr-approval-audit \
 		--backup-name "atdr-approval-audit-$$(date +%Y%m%d-%H%M%S)" \
-		--region $(REGION) 2>/dev/null && echo "  approval-audit: done" || echo "  approval-audit: skipped"
-
-.PHONY: status
-
-status: kubeconfig
-	@echo "=== ATDR Status ==="
-	@echo ""
-	@echo "--- EKS Cluster ---"
-	@aws eks describe-cluster --name $(CLUSTER) --region $(REGION) \
-		--query 'cluster.{status:status,version:version,endpoint:endpoint}' \
-		--output table 2>/dev/null || echo "  Cluster not found"
-	@echo ""
-	@echo "--- Node Groups ---"
-	@$(MAKE) -s scale-status
-	@echo ""
-	@echo "--- Pods (all namespaces) ---"
-	@$(KUBECTL) get pods -A --no-headers 2>/dev/null | awk '{print $$1}' | sort | uniq -c | sort -rn || echo "  Cannot connect"
-	@echo ""
-	@echo "--- Grafana URL ---"
-	@$(KUBECTL) get ingress grafana -n monitoring -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null && echo "" || echo "  Not available"
-
-.PHONY: clean
+		--region $(REGION) 2>/dev/null && echo "approval-audit: done" || echo "approval-audit: skipped"
 
 clean:
 	rm -rf build/
-	rm -rf terraform/modules/lambda/*.zip
+	rm -rf $(LAMBDA_MOD)/*.zip
 	rm -rf terraform/modules/slack/*.zip
 	rm -rf terraform/envs/demo/.terraform
-	rm -rf terraform/envs/demo/.terraform.lock.hcl
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 	find . -type d -name .pytest_cache -exec rm -rf {} + 2>/dev/null || true
