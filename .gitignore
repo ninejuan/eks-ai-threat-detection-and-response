@@ -44,3 +44,4 @@ __pycache__/
 .pytest_cache/
 build/
 .terraform.lock.hcl
+slack/manifest.json

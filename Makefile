@@ -9,7 +9,7 @@ LAYER_DIR    := build/layer/python
 
 .PHONY: infra-up infra-down platform-up platform-down deploy-lambdas deploy-layer \
         all-up all-down status lint lint-fix test build build-layer build-lambdas \
-        secrets scale-down scale-up scale-status backup-db clean
+        secrets scale-down scale-up scale-status backup-db clean slack-manifest
 
 ## ─── Infrastructure ──────────────────────────────────────────────
 
@@ -17,6 +17,7 @@ infra-up: build
 	cd $(TF_DIR) && terraform init && terraform apply -auto-approve
 	aws eks update-kubeconfig --name $(CLUSTER_NAME) --region $(REGION) --alias $(CLUSTER_NAME)
 	@echo "Context created: $(CLUSTER_NAME)"
+	@$(MAKE) -s slack-manifest
 
 infra-down:
 	$(MAKE) platform-down || true
@@ -249,3 +250,22 @@ clean:
 	rm -rf terraform/envs/demo/.terraform
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 	find . -type d -name .pytest_cache -exec rm -rf {} + 2>/dev/null || true
+
+## ─── Slack ───────────────────────────────────────────────────────
+
+slack-manifest:
+	@SLACK_URL=$$(cd $(TF_DIR) && terraform output -raw slack_api_endpoint 2>/dev/null) && \
+		if [ -z "$$SLACK_URL" ]; then echo "ERROR: slack_api_endpoint not found. Run make infra-up first."; exit 1; fi && \
+		sed "s|\$${SLACK_API_URL}|$$SLACK_URL|g" slack/manifest.json.tpl > slack/manifest.json && \
+		echo "" && \
+		echo "=== Slack App Manifest Generated ===" && \
+		echo "File: slack/manifest.json" && \
+		echo "API URL: $$SLACK_URL" && \
+		echo "" && \
+		echo "Setup:" && \
+		echo "  1. Go to https://api.slack.com/apps" && \
+		echo "  2. Create New App → From an app manifest" && \
+		echo "  3. Paste contents of slack/manifest.json" && \
+		echo "  4. Install to Workspace" && \
+		echo "  5. Run: make secrets" && \
+		echo "==="
