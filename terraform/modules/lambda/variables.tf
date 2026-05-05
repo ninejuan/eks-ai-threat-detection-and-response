@@ -55,3 +55,8 @@ variable "eks_cluster_name" {
   description = "EKS cluster name for Remediation Agent"
   type        = string
 }
+
+variable "dynamodb_table_name" {
+  description = "DynamoDB table name for incident records"
+  type        = string
+}

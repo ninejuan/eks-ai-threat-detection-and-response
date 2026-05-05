@@ -50,7 +50,8 @@ platform-up:
 	@echo "--- Falco ---"
 	$(HLM) upgrade --install falco falcosecurity/falco \
 		-n falco --create-namespace \
-		-f kubernetes/falco/values.yaml
+		-f kubernetes/falco/values.yaml \
+		--set falcosidekick.config.aws.sns.topicarn=$$(cd $(TF_DIR) && terraform output -raw sns_topic_arn 2>/dev/null || echo "")
 	@echo "--- Tetragon ---"
 	$(HLM) upgrade --install tetragon cilium/tetragon \
 		-n tetragon --create-namespace
@@ -230,13 +231,49 @@ build-layer:
 	@echo "Layer: $(LAMBDA_MOD)/layer.zip"
 
 build-lambdas:
+	@rm -rf build/lambdas
 	@for agent in summary triage solution remediation; do \
-		cd app/agents/$$agent && zip -r ../../../$(LAMBDA_MOD)/$$agent.zip *.py -q && cd ../../..; \
+		mkdir -p build/lambdas/$$agent && \
+		cp app/agents/$$agent/*.py build/lambdas/$$agent/ && \
+		cp -r app/shared build/lambdas/$$agent/app_shared && \
+		cd build/lambdas/$$agent && \
+		mkdir -p app/shared && mv app_shared/* app/shared/ && rmdir app_shared && \
+		touch app/__init__.py app/shared/__init__.py && \
+		zip -r ../../../$(LAMBDA_MOD)/$$agent.zip . -q && \
+		cd ../../..; \
 	done
-	@cd app/ingestor && zip -r ../../$(LAMBDA_MOD)/ingestor.zip *.py -q && cd ../..
-	@cd app/degraded_notifier && zip -r ../../$(LAMBDA_MOD)/degraded_notifier.zip *.py -q && cd ../..
-	@cd app/slack_bot && zip -r ../../terraform/modules/slack/slack_bot.zip *.py -q && cd ../..
-	@cd app/shared && zip -r ../../$(LAMBDA_MOD)/shared.zip *.py -q && cd ../..
+	@mkdir -p build/lambdas/ingestor && \
+		cp app/ingestor/*.py build/lambdas/ingestor/ && \
+		cp -r app/shared build/lambdas/ingestor/app_shared && \
+		cd build/lambdas/ingestor && \
+		mkdir -p app/shared && mv app_shared/* app/shared/ && rmdir app_shared && \
+		touch app/__init__.py app/shared/__init__.py && \
+		zip -r ../../../$(LAMBDA_MOD)/ingestor.zip . -q && \
+		cd ../../..
+	@mkdir -p build/lambdas/degraded_notifier && \
+		cp app/degraded_notifier/*.py build/lambdas/degraded_notifier/ && \
+		cp -r app/shared build/lambdas/degraded_notifier/app_shared && \
+		cd build/lambdas/degraded_notifier && \
+		mkdir -p app/shared && mv app_shared/* app/shared/ && rmdir app_shared && \
+		touch app/__init__.py app/shared/__init__.py && \
+		zip -r ../../../$(LAMBDA_MOD)/degraded_notifier.zip . -q && \
+		cd ../../..
+	@mkdir -p build/lambdas/approval_notifier && \
+		cp app/approval_notifier/*.py build/lambdas/approval_notifier/ && \
+		cp -r app/shared build/lambdas/approval_notifier/app_shared && \
+		cd build/lambdas/approval_notifier && \
+		mkdir -p app/shared && mv app_shared/* app/shared/ && rmdir app_shared && \
+		touch app/__init__.py app/shared/__init__.py && \
+		zip -r ../../../$(LAMBDA_MOD)/approval_notifier.zip . -q && \
+		cd ../../..
+	@mkdir -p build/lambdas/slack_bot && \
+		cp app/slack_bot/*.py build/lambdas/slack_bot/ && \
+		cp -r app/shared build/lambdas/slack_bot/app_shared && \
+		cd build/lambdas/slack_bot && \
+		mkdir -p app/shared && mv app_shared/* app/shared/ && rmdir app_shared && \
+		touch app/__init__.py app/shared/__init__.py && \
+		zip -r ../../../terraform/modules/slack/slack_bot.zip . -q && \
+		cd ../../..
 	@echo "Lambdas packaged."
 
 ## ─── Quality ─────────────────────────────────────────────────────

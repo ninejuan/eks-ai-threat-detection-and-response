@@ -1,5 +1,5 @@
 import json
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from app.agents.summary import handler
 
@@ -9,7 +9,8 @@ def test_lambda_handler_returns_parsed_summary(monkeypatch, context):
     client.invoke.return_value = json.dumps({"incident_id": "inc-1", "source": "falco", "summary": "Process exec"})
     monkeypatch.setattr(handler, "BedrockClient", lambda model_id, region: client)
 
-    result = handler.lambda_handler({"raw_event": {"rule": "exec", "output": "sh"}}, context)
+    with patch.object(handler, "_store_incident"):
+        result = handler.lambda_handler({"raw_event": {"rule": "exec", "output": "sh"}}, context)
 
     assert result["incident_id"] == "inc-1"
     assert result["raw_event"] == {"rule": "exec", "output": "sh"}
@@ -22,7 +23,8 @@ def test_lambda_handler_wraps_json_parse_failure(monkeypatch, context):
     client.invoke.return_value = "plain text summary"
     monkeypatch.setattr(handler, "BedrockClient", lambda model_id, region: client)
 
-    result = handler.lambda_handler({"detail": "guardduty"}, context)
+    with patch.object(handler, "_store_incident"):
+        result = handler.lambda_handler({"detail": "guardduty"}, context)
 
     assert result["summary"] == "plain text summary"
     assert result["parse_error"] is True
@@ -35,7 +37,8 @@ def test_lambda_handler_uses_event_as_raw_event_when_missing_key(monkeypatch, co
     monkeypatch.setattr(handler, "BedrockClient", lambda model_id, region: client)
 
     event = {"source": "aws.guardduty"}
-    result = handler.lambda_handler(event, context)
+    with patch.object(handler, "_store_incident"):
+        result = handler.lambda_handler(event, context)
 
     assert result["raw_event"] == event
     assert result["title"] == "Unknown"

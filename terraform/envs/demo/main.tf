@@ -53,6 +53,8 @@ module "eks" {
   external_secrets_role_arn    = module.iam.external_secrets_role_arn
   aws_lb_controller_role_arn   = module.iam.aws_lb_controller_role_arn
   ebs_csi_role_arn             = module.iam.ebs_csi_role_arn
+  lambda_role_arn              = module.iam.lambda_agent_role_arn
+  lambda_security_group_id     = module.lambda.lambda_security_group_id
   vpc_id                       = module.vpc.vpc_id
   private_subnet_ids           = module.vpc.private_subnet_ids
   endpoint_public_access_cidrs = var.endpoint_public_access_cidrs
@@ -93,6 +95,7 @@ module "lambda" {
   sqs_queue_arn           = module.sns_sqs.sqs_queue_arn
   opensearch_endpoint     = module.opensearch.collection_endpoint
   eks_cluster_name        = module.eks.cluster_name
+  dynamodb_table_name     = aws_dynamodb_table.incidents.name
 }
 
 module "slack" {

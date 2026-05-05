@@ -34,3 +34,7 @@ output "guardduty_detector_id" {
 output "opensearch_endpoint" {
   value = module.opensearch.collection_endpoint
 }
+
+output "sns_topic_arn" {
+  value = module.sns_sqs.sns_topic_arn
+}

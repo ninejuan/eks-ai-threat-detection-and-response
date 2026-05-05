@@ -181,3 +181,29 @@ resource "aws_eks_pod_identity_association" "aws_lb_controller" {
   service_account = "aws-load-balancer-controller"
   role_arn        = var.aws_lb_controller_role_arn
 }
+
+resource "aws_eks_access_entry" "lambda" {
+  cluster_name  = aws_eks_cluster.main.name
+  principal_arn = var.lambda_role_arn
+  type          = "STANDARD"
+}
+
+resource "aws_eks_access_policy_association" "lambda" {
+  cluster_name  = aws_eks_cluster.main.name
+  principal_arn = var.lambda_role_arn
+  policy_arn    = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
+
+  access_scope {
+    type = "cluster"
+  }
+}
+
+resource "aws_security_group_rule" "lambda_to_cluster" {
+  type                     = "ingress"
+  from_port                = 443
+  to_port                  = 443
+  protocol                 = "tcp"
+  source_security_group_id = var.lambda_security_group_id
+  security_group_id        = aws_security_group.cluster.id
+  description              = "Lambda agents to EKS API"
+}

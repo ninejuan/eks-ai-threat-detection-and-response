@@ -77,6 +77,7 @@ resource "aws_lambda_function" "agent" {
       OPENSEARCH_ENDPOINT = var.opensearch_endpoint
       KNOWLEDGE_BASE_ID   = var.knowledge_base_id
       EKS_CLUSTER_NAME    = var.eks_cluster_name
+      DYNAMODB_TABLE_NAME = var.dynamodb_table_name
       PROJECT             = var.project
       LOG_LEVEL           = "INFO"
     }
@@ -159,6 +160,36 @@ resource "aws_lambda_function" "degraded_notifier" {
   }
 }
 
+resource "aws_lambda_function" "approval_notifier" {
+  function_name = "${var.project}-approval-notifier"
+  role          = var.execution_role_arn
+  runtime       = "python3.12"
+  handler       = "handler.lambda_handler"
+  filename      = "${path.module}/placeholder.zip"
+  timeout       = 30
+  memory_size   = 256
+  layers        = [aws_lambda_layer_version.dependencies.arn]
+
+  environment {
+    variables = {
+      PROJECT   = var.project
+      LOG_LEVEL = "INFO"
+    }
+  }
+
+  tracing_config {
+    mode = "Active"
+  }
+
+  tags = {
+    Name = "${var.project}-approval-notifier"
+  }
+
+  lifecycle {
+    ignore_changes = [filename, source_code_hash]
+  }
+}
+
 resource "aws_lambda_event_source_mapping" "sqs_ingestor" {
   event_source_arn = var.sqs_queue_arn
   function_name    = aws_lambda_function.ingestor.arn
@@ -173,7 +204,7 @@ resource "aws_lambda_event_source_mapping" "sqs_ingestor" {
 resource "aws_sfn_state_machine" "agent_pipeline" {
   name     = "${var.project}-agent-pipeline"
   role_arn = var.step_functions_role_arn
-  type     = "EXPRESS"
+  type     = "STANDARD"
 
   logging_configuration {
     log_destination        = "${aws_cloudwatch_log_group.step_functions.arn}:*"
@@ -242,12 +273,19 @@ resource "aws_sfn_state_machine" "agent_pipeline" {
 
       CheckSeverity = {
         Type = "Choice"
-        Choices = [{
-          Variable     = "$.triage.body.severity"
-          StringEquals = "P4"
-          Next         = "LogOnly"
-        }]
-        Default = "SolutionAgent"
+        Choices = [
+          {
+            Variable     = "$.triage.body.severity"
+            StringEquals = "P4"
+            Next         = "LogOnly"
+          },
+          {
+            Variable     = "$.triage.body.severity"
+            StringEquals = "P3"
+            Next         = "SolutionAgent"
+          }
+        ]
+        Default = "SolutionAgentWithApproval"
       }
 
       SolutionAgent = {
@@ -273,6 +311,61 @@ resource "aws_sfn_state_machine" "agent_pipeline" {
           ResultPath  = "$.error"
         }]
         Next = "RemediationAgent"
+      }
+
+      SolutionAgentWithApproval = {
+        Type     = "Task"
+        Resource = "arn:aws:states:::lambda:invoke"
+        Parameters = {
+          FunctionName = aws_lambda_function.agent["solution"].arn
+          "Payload.$"  = "$"
+        }
+        ResultSelector = {
+          "body.$" = "$.Payload"
+        }
+        ResultPath = "$.solution"
+        Retry = [{
+          ErrorEquals     = ["States.ALL"]
+          IntervalSeconds = 5
+          BackoffRate     = 2
+          MaxAttempts     = 3
+        }]
+        Catch = [{
+          ErrorEquals = ["States.ALL"]
+          Next        = "DegradedNotify"
+          ResultPath  = "$.error"
+        }]
+        Next = "WaitForApproval"
+      }
+
+      WaitForApproval = {
+        Type     = "Task"
+        Resource = "arn:aws:states:::lambda:invoke.waitForTaskToken"
+        Parameters = {
+          FunctionName = aws_lambda_function.approval_notifier.arn
+          Payload = {
+            "execution.$"  = "$"
+            "task_token.$" = "$$.Task.Token"
+          }
+        }
+        TimeoutSeconds = 3600
+        ResultPath     = "$.approval"
+        Catch = [{
+          ErrorEquals = ["States.Timeout"]
+          Next        = "ApprovalTimeout"
+          ResultPath  = "$.error"
+        }]
+        Next = "CheckApproval"
+      }
+
+      CheckApproval = {
+        Type = "Choice"
+        Choices = [{
+          Variable     = "$.approval.decision"
+          StringEquals = "approved"
+          Next         = "RemediationAgent"
+        }]
+        Default = "RejectedEnd"
       }
 
       RemediationAgent = {
@@ -303,6 +396,25 @@ resource "aws_sfn_state_machine" "agent_pipeline" {
       LogOnly = {
         Type = "Pass"
         End  = true
+      }
+
+      RejectedEnd = {
+        Type = "Pass"
+        End  = true
+      }
+
+      ApprovalTimeout = {
+        Type     = "Task"
+        Resource = "arn:aws:states:::lambda:invoke"
+        Parameters = {
+          FunctionName = aws_lambda_function.degraded_notifier.arn
+          Payload = {
+            "source.$"    = "$.source"
+            "raw_event.$" = "$.raw_event"
+            "error"       = { "Cause" = "Approval timed out after 1 hour" }
+          }
+        }
+        End = true
       }
 
       DegradedNotify = {

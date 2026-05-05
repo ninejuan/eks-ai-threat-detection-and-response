@@ -188,11 +188,36 @@ def lambda_handler(event: dict, context) -> dict:
 
         messages.append({"role": "user", "content": tool_results})
 
-    return {
+    result = {
         "status": "completed",
         "execution_log": execution_log,
         "actions_taken": len([e for e in execution_log if "tool" in e]),
     }
+
+    _update_incident_status(config, event, result)
+    return result
+
+
+def _update_incident_status(config: Config, event: dict, result: dict) -> None:
+    from app.shared.dynamodb import IncidentStore
+
+    if not config.dynamodb_table_name:
+        return
+
+    summary = event.get("summary", {}).get("body", {})
+    incident_id = summary.get("incident_id")
+    if not incident_id:
+        return
+
+    store = IncidentStore(table_name=config.dynamodb_table_name)
+    store.update_incident(
+        incident_id=incident_id,
+        updates={
+            "status": "remediated",
+            "actions_taken": result.get("actions_taken", 0),
+            "remediation_status": result.get("status", "unknown"),
+        },
+    )
 
 
 def _execute_tool(tool_name: str, tool_input: dict) -> dict:

@@ -44,4 +44,27 @@ def lambda_handler(event: dict, context) -> dict:
         summary = {"summary": response_text, "parse_error": True}
 
     summary["raw_event"] = raw_event
+
+    _store_incident(config, summary)
     return summary
+
+
+def _store_incident(config: Config, summary: dict) -> None:
+    from app.shared.dynamodb import IncidentStore
+
+    if not config.dynamodb_table_name:
+        return
+
+    store = IncidentStore(table_name=config.dynamodb_table_name)
+    incident_id = summary.get("incident_id", f"inc-{int(__import__('time').time())}")
+
+    store.put_incident(
+        incident_id=incident_id,
+        data={
+            "source": summary.get("source", "unknown"),
+            "title": summary.get("title", ""),
+            "summary": summary.get("summary", ""),
+            "status": "detected",
+            "mitre_technique": summary.get("mitre_technique", ""),
+        },
+    )

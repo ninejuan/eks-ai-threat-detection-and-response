@@ -108,6 +108,7 @@ def _handle_approval_action(payload: dict, config: Config) -> dict:
 
     parts = value.split("|") if value else []
     incident_id = parts[0] if parts else "unknown"
+    task_token = parts[1] if len(parts) > 1 else ""
 
     dynamodb = boto3.resource("dynamodb")
     table = dynamodb.Table(f"{config.project}-approval-audit")
@@ -120,13 +121,25 @@ def _handle_approval_action(payload: dict, config: Config) -> dict:
         "timestamp": int(time.time()),
     }
 
+    sfn = boto3.client("stepfunctions")
+
     if action_id == "approve_remediation":
         audit_record["decision"] = "approved"
         table.put_item(Item=audit_record)
+        if task_token:
+            sfn.send_task_success(
+                taskToken=task_token,
+                output=json.dumps({"decision": "approved", "approved_by": user}),
+            )
         response_text = f"Remediation approved by @{user}"
     elif action_id == "reject_remediation":
         audit_record["decision"] = "rejected"
         table.put_item(Item=audit_record)
+        if task_token:
+            sfn.send_task_success(
+                taskToken=task_token,
+                output=json.dumps({"decision": "rejected", "rejected_by": user}),
+            )
         response_text = f"Remediation rejected by @{user}"
     else:
         response_text = f"Unknown action: {action_id}"

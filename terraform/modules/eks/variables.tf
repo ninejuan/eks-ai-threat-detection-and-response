@@ -53,3 +53,13 @@ variable "ebs_csi_role_arn" {
   description = "IAM role ARN for EBS CSI Driver Pod Identity"
   type        = string
 }
+
+variable "lambda_role_arn" {
+  description = "IAM role ARN for Lambda agents (EKS Access Entry)"
+  type        = string
+}
+
+variable "lambda_security_group_id" {
+  description = "Security group ID of Lambda agents (for EKS API ingress)"
+  type        = string
+}
