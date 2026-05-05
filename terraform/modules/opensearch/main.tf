@@ -6,17 +6,15 @@ resource "aws_opensearchserverless_security_policy" "encryption" {
   name = "${var.project}-encryption"
   type = "encryption"
 
-  policy = jsonencode([
-    {
-      Rules = [
-        {
-          Resource     = ["collection/${local.collection_name}"]
-          ResourceType = "collection"
-        }
-      ]
-      AWSOwnedKey = true
-    }
-  ])
+  policy = jsonencode({
+    Rules = [
+      {
+        Resource     = ["collection/${local.collection_name}"]
+        ResourceType = "collection"
+      }
+    ]
+    AWSOwnedKey = true
+  })
 }
 
 resource "aws_opensearchserverless_security_policy" "network" {

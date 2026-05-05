@@ -1,5 +1,6 @@
 resource "aws_s3_bucket" "runbooks" {
-  bucket = "${var.project}-runbooks-${var.account_id}"
+  bucket        = "${var.project}-runbooks-${var.account_id}"
+  force_destroy = true
 }
 
 resource "aws_s3_bucket_versioning" "runbooks" {
@@ -22,6 +23,7 @@ resource "aws_s3_bucket_public_access_block" "runbooks" {
 resource "aws_s3_bucket" "forensics" {
   bucket              = "${var.project}-forensics-${var.account_id}"
   object_lock_enabled = true
+  force_destroy       = true
 }
 
 resource "aws_s3_bucket_versioning" "forensics" {
@@ -64,7 +66,8 @@ resource "aws_s3_bucket_public_access_block" "forensics" {
 }
 
 resource "aws_s3_bucket" "logs" {
-  bucket = "${var.project}-logs-${var.account_id}"
+  bucket        = "${var.project}-logs-${var.account_id}"
+  force_destroy = true
 }
 
 resource "aws_s3_bucket_lifecycle_configuration" "logs" {

@@ -35,6 +35,8 @@ resource "aws_securityhub_account" "this" {
 
 resource "aws_securityhub_finding_aggregator" "this" {
   linking_mode = "ALL_REGIONS"
+
+  depends_on = [aws_securityhub_account.this]
 }
 
 resource "aws_cloudwatch_event_rule" "guardduty_severity" {

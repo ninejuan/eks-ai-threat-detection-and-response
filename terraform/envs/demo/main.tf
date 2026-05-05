@@ -150,7 +150,8 @@ resource "aws_dynamodb_table" "approval_audit" {
 }
 
 resource "aws_secretsmanager_secret" "slack_bot_token" {
-  name = "${var.project_name}/slack/bot-token"
+  name                    = "${var.project_name}/slack/bot-token"
+  recovery_window_in_days = 0
 
   tags = {
     Name = "${var.project_name}-slack-bot-token"
@@ -158,7 +159,8 @@ resource "aws_secretsmanager_secret" "slack_bot_token" {
 }
 
 resource "aws_secretsmanager_secret" "slack_signing_secret" {
-  name = "${var.project_name}/slack/signing-secret"
+  name                    = "${var.project_name}/slack/signing-secret"
+  recovery_window_in_days = 0
 
   tags = {
     Name = "${var.project_name}-slack-signing-secret"
@@ -166,7 +168,8 @@ resource "aws_secretsmanager_secret" "slack_signing_secret" {
 }
 
 resource "aws_secretsmanager_secret" "mcp_auth_token" {
-  name = "${var.project_name}/mcp/auth-token"
+  name                    = "${var.project_name}/mcp/auth-token"
+  recovery_window_in_days = 0
 
   tags = {
     Name = "${var.project_name}-mcp-auth-token"
