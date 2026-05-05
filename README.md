@@ -1,399 +1,304 @@
-# eks-ai-threat-detection-and-response
-[인공지능과미래사회1학기프젝-대괄호부분삭제필요] AI-driven threat detection, correlation, and remediation for runtime and network security events in AWS EKS environments.
+# ATDR — AI Threat Detection and Response for EKS
 
-## 1. Project Summary
+EKS 환경에서 보안 위협을 실시간 탐지하고, AI 에이전트 체인으로 분석·대응하는 시스템.
 
-ATDR is a security research and engineering project that detects, analyzes, and responds to threats in Kubernetes workloads running on AWS EKS.
+<!-- TODO: 아키텍처 다이어그램 삽입 -->
 
-The system collects security and operational telemetry from cloud, Kubernetes, runtime, and network layers, then uses AI/ML-based analysis to:
+## Architecture
 
-- detect abnormal behavior
-- classify threat types
-- correlate events across multiple signals
-- infer likely attack paths or root causes
-- recommend or execute remediation actions
-
-This project is designed as a graduate capstone/final project and focuses on the intersection of:
-
-- **Artificial Intelligence**: anomaly detection, classification, correlation, explanation, and response recommendation
-- **Kubernetes**: workload orchestration, policy enforcement, remediation execution, and EKS-native operations
-- **Network/Security**: east-west traffic analysis, egress anomaly detection, runtime threat detection, and containment
-
----
-
-## 2. Problem Statement
-
-Modern Kubernetes environments generate many fragmented security signals:
-
-- cloud-level events
-- Kubernetes audit events
-- container/runtime activity
-- network flows
-- DNS activity
-- application metrics and traces
-
-Security operators often need to manually inspect multiple dashboards, logs, and alerts to understand:
-
-- whether a threat is real
-- what kind of threat it is
-- which workload is affected
-- how the threat is spreading
-- what remediation action should be taken
-
-ATDR aims to reduce that burden by building an AI-driven analysis and response layer on top of AWS and Kubernetes telemetry.
-
----
-
-## 3. Core Objective
-
-The core objective of this project is:
-
-> Build an AI-powered security system for AWS EKS that can detect, correlate, explain, and respond to runtime and network threats in Kubernetes environments.
-
----
-
-## 4. Scope
-
-### In Scope
-
-- AWS EKS-based deployment
-- Security telemetry collection from AWS and Kubernetes
-- Runtime and network threat analysis
-- AI/ML-based anomaly detection and threat classification
-- Event correlation across multiple data sources
-- Remediation recommendation
-- Optional semi-automatic or automatic remediation
-- Infrastructure as Code using Terraform
-- Kubernetes manifests managed with Kustomize
-- Reproducible workflows via Makefile
-
-### Out of Scope
-
-- Full-scale commercial SIEM replacement
-- Production-grade SOC integration
-- Advanced malware development or offensive exploitation
-- Large-scale LLM fine-tuning
-- Multi-cloud support in the first version
-
----
-
-## 5. Example Threat Scenarios
-
-The initial version of the project focuses on realistic but controlled scenarios such as:
-
-- abnormal outbound traffic from a pod
-- suspicious east-west communication between namespaces
-- privilege misuse or suspicious Kubernetes API activity
-- unusual runtime behavior inside a container
-- possible lateral movement patterns
-- crypto-mining-like CPU/network behavior
-- DNS anomalies or external beaconing-like behavior
-
-These scenarios are used to generate labeled or semi-labeled datasets for training and evaluation.
-
----
-
-## 6. High-Level Architecture
-
-### Data Sources
-- AWS CloudTrail
-- VPC Flow Logs
-- DNS logs
-- EKS audit logs
-- runtime/container events
-- application metrics and traces
-
-### Analysis Layer
-- anomaly detection model
-- threat classification model
-- multi-source correlation engine
-- root-cause / attack-path inference
-- remediation recommendation engine
-- optional LLM-based explanation layer
-
-### Control / Response Layer
-- NetworkPolicy generation or update
-- pod isolation / quarantine
-- namespace-level containment
-- restart / rollback / scale actions
-- approval-based remediation workflow
-
-### User Interface / Outputs
-- incident summary
-- threat type classification
-- affected resources
-- recommended remediation actions
-- before/after response status
-
----
-
-## 7. AI Role in This Project
-
-AI is the primary intelligence layer of this system.
-
-It is not only used for text summarization.  
-Its main responsibilities include:
-
-1. **Anomaly Detection**
-   - determine whether current behavior is normal or suspicious
-
-2. **Threat Classification**
-   - classify the likely threat type from observed telemetry
-
-3. **Event Correlation**
-   - connect signals from AWS, Kubernetes, runtime, and network sources
-
-4. **Root Cause / Attack Path Inference**
-   - estimate where the incident started and how it propagated
-
-5. **Response Recommendation**
-   - rank the most appropriate remediation actions
-
-6. **Human-Readable Explanation**
-   - explain why the system reached a decision
-
----
-
-## 8. Why Kubernetes and AWS Matter
-
-This project is not a generic AI security tool.
-
-It is specifically designed for **AWS-native Kubernetes security operations**, with AWS EKS as the primary platform.
-
-### Why Kubernetes
-- workloads are dynamic and distributed
-- incidents may propagate across pods, services, and namespaces
-- remediation can be executed as Kubernetes-native actions
-
-### Why AWS
-- EKS is the execution environment
-- AWS services provide rich telemetry and event sources
-- AWS-native security data can be combined with Kubernetes-native signals
-
----
-
-## 9. Repository Structure
-
-```text
-.
-├── apps/
-│   ├── demo-app/               # Sample workloads deployed on EKS
-│   ├── attack-simulator/       # Controlled threat / anomaly scenario generator
-│   ├── ai-detector/            # Anomaly detection and threat classification service
-│   ├── correlator/             # Multi-source event correlation engine
-│   ├── response-advisor/       # Remediation recommendation service
-│   └── dashboard/              # UI or API for results and review
-│
-├── terraform/
-│   ├── eks/                    # EKS cluster and node groups
-│   ├── network/                # VPC, subnets, security groups
-│   ├── iam/                    # IAM roles and policies
-│   └── observability/          # Supporting AWS resources
-│
-├── k8s/
-│   ├── base/
-│   │   ├── demo-app/
-│   │   ├── ai-detector/
-│   │   ├── correlator/
-│   │   ├── response-advisor/
-│   │   ├── dashboard/
-│   │   └── policies/
-│   └── overlays/
-│       ├── dev/
-│       ├── demo/
-│       ├── attack-scenarios/
-│       └── quarantine/
-│
-├── data/
-│   ├── raw/                    # Collected logs, flows, traces, findings
-│   ├── processed/              # Feature-engineered datasets
-│   └── labeled/                # Training / evaluation labels
-│
-├── models/
-│   ├── anomaly/
-│   ├── classification/
-│   └── response-ranking/
-│
-├── notebooks/                  # Exploration and experiment notebooks
-├── scripts/                    # Utilities, ingestion jobs, data prep
-├── reports/                    # Figures, screenshots, evaluation assets
-├── Makefile
-└── README.md
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                         EKS Cluster (v1.35)                         │
+│                                                                     │
+│  ┌─────────┐  ┌──────────┐  ┌───────────────┐  ┌───────────────┐  │
+│  │  Falco  │  │ Tetragon │  │ GuardDuty     │  │  Workloads    │  │
+│  │  (eBPF) │  │  (eBPF)  │  │ Runtime Agent │  │  (apps)       │  │
+│  └────┬────┘  └────┬─────┘  └──────┬────────┘  └───────────────┘  │
+│       │             │               │                               │
+└───────┼─────────────┼───────────────┼───────────────────────────────┘
+        │             │               │
+        v             │               v
+   ┌─────────┐        │        ┌─────────────┐
+   │   SNS   │        │        │ EventBridge │
+   └────┬────┘        │        └──────┬──────┘
+        │             │               │
+        v             v               v
+   ┌──────────────────────────────────────┐
+   │              SQS Queue               │
+   └──────────────────┬───────────────────┘
+                      │
+                      v
+   ┌──────────────────────────────────────┐
+   │    Step Functions Express Workflow    │
+   │                                      │
+   │  Summary → Triage → Solution → Rem  │
+   │  (Haiku)   (Haiku)  (Sonnet)  (Son) │
+   └──────────────────┬───────────────────┘
+                      │
+              ┌───────┼───────┐
+              v       v       v
+         ┌───────┐ ┌─────┐ ┌──────────┐
+         │ Slack │ │ DDB │ │ EKS MCP  │
+         │  Bot  │ │     │ │(격리/삭제)│
+         └───────┘ └─────┘ └──────────┘
 ```
 
----
+3중 탐지(Falco + Tetragon + GuardDuty) → AI 4단계 분석(Summary → Triage → Solution → Remediation) → 자동 대응(Pod 격리, SIGKILL, NetworkPolicy) + Human Approval via Slack.
 
-## 10. Main Workflow
+## Quick Start
 
-Deploy workloads and observability/security stack on AWS EKS
+### Prerequisites
 
-Generate normal and suspicious runtime/network behavior
+- AWS CLI v2 + credentials configured
+- Terraform >= 1.10.0
+- kubectl >= 1.35
+- Helm >= 3.x
+- Python 3.12
+- make
 
-Collect telemetry from cloud, Kubernetes, and runtime layers
+### 1. Bootstrap (최초 1회)
 
-Convert telemetry into features and structured events
+```bash
+./init.sh
+```
 
-Run AI models for anomaly detection and threat classification
+S3 backend 버킷을 생성하고 terraform init을 실행한다.
 
-Correlate findings into a higher-level incident view
+### 2. Infrastructure Up
 
-Recommend remediation actions
-
-Optionally apply remediation to the cluster
-
-Measure detection quality, response quality, and recovery results
-
----
-
-## 11. Research / Evaluation Questions
-
-This project aims to evaluate questions such as:
-
-Can AI detect security-relevant anomalies in EKS more accurately than simple threshold-based rules?
-
-Can multi-source correlation improve threat understanding over single-source alerts?
-
-Can AI produce useful remediation recommendations for Kubernetes-native response actions?
-
-Does the system reduce time-to-detect and time-to-respond in controlled experiments?
-
----
-
-## 12. Evaluation Metrics
-
-Possible evaluation metrics include:
-
-anomaly detection precision / recall / F1
-
-threat classification accuracy
-
-Top-k root cause accuracy
-
-remediation recommendation accuracy or relevance
-
-false positive rate
-
-mean time to detect
-
-mean time to recommend response
-
-service recovery time after remediation
-
-workload impact before and after response
-
----
-
-## 13. Expected Outputs
-
-This repository is expected to produce:
-
-application source code
-
-AI analysis services
-
-Terraform infrastructure code
-
-Kubernetes Kustomize manifests
-
-reproducible Makefile workflows
-
-experiment data and evaluation results
-
-screenshots and report assets
-
-final project report materials
-
----
-
-## 14. Technology Stack
-Cloud / Infra
-
-AWS
-
-Amazon EKS
-
-Terraform
-
-Kubernetes
-
-Kustomize
-
-NetworkPolicy
-
-RBAC / namespace isolation
-
-Data / Observability
-
-CloudTrail
-
-VPC Flow Logs
-
-DNS logs
-
-EKS audit logs
-
-Prometheus / Grafana
-
-optional tracing pipeline
-
-AI / Backend
-
-Python
-
-scikit-learn / XGBoost / LightGBM
-
-optional LLM integration for explanation
-
-FastAPI or similar API layer
-
-Automation
-
-Makefile
-
-CI/CD pipeline (optional)
-
-GitHub Actions (optional)
-
----
-
-## 15. Non-Goals
-
-To keep the project achievable within the capstone timeline, the following are not primary goals:
-
-building a commercial security product
-
-supporting every Kubernetes distribution
-
-replacing enterprise SOC tooling
-
-implementing advanced offensive techniques
-
-training large foundation models from scratch
-
----
-
-## 16. Project Status
-
-Current status: Planning / Design
-
-Planned milestones:
-
-infrastructure setup
-
-telemetry ingestion
-
-scenario generation
-
-feature engineering
-
-model development
-
-remediation workflow
-
-evaluation and final report
-
----
-
-## 17. One-Sentence Definition
-
-ATDR is an AI-driven security system for AWS EKS that detects, correlates, explains, and responds to runtime and network threats in Kubernetes environments.
+```bash
+make infra-up
+```
+
+Terraform으로 전체 AWS 인프라를 생성한다:
+- VPC (2-AZ, public/private subnets, NAT GW)
+- EKS 클러스터 (v1.35, t3.large + c5.large 노드)
+- IAM 역할 (EKS, Lambda, Step Functions, Pod Identity)
+- GuardDuty + Security Hub + EventBridge
+- SNS/SQS + DLQ
+- Lambda 함수 6개 + Step Functions 워크플로우
+- API Gateway (Slack Bot)
+- OpenSearch Serverless (Knowledge Base)
+- KMS + S3 (runbooks, forensics, logs)
+- DynamoDB (incidents, approval-audit)
+- Secrets Manager
+
+약 15-20분 소요. 완료 후 kubeconfig가 자동 설정된다.
+
+### 3. Platform Up (Kubernetes 컴포넌트)
+
+```bash
+make platform-up
+```
+
+Helm으로 보안/관측 스택을 배포한다:
+- AWS Load Balancer Controller
+- Falco + custom rules
+- Tetragon + TracingPolicies
+- kube-prometheus-stack (Prometheus + Grafana + Alertmanager)
+- Loki
+- External Secrets Operator
+- ValidatingAdmissionPolicy
+
+약 5-10분 소요.
+
+### 4. Secrets 설정
+
+```bash
+make secrets
+```
+
+인터랙티브 프롬프트로 Slack Bot Token, Signing Secret, MCP Token을 설정한다.
+
+Slack App은 [api.slack.com](https://api.slack.com/apps)에서 먼저 생성해야 한다:
+- Bot Token Scopes: `chat:write`, `commands`, `incoming-webhook`
+- Event Subscriptions URL: `<slack_api_endpoint>/slack/events`
+- Interactivity URL: `<slack_api_endpoint>/slack/interactions`
+- Slash Commands: `/atdr`
+
+`slack_api_endpoint`는 `make infra-up` 출력에서 확인할 수 있다.
+
+### 5. Lambda 코드 배포
+
+```bash
+make deploy-lambdas
+```
+
+실제 Agent 코드를 Lambda에 업로드한다.
+
+### 6. 검증
+
+```bash
+make status
+```
+
+## 전체 배포 (한 번에)
+
+```bash
+./init.sh              # 최초 1회
+make all-up            # infra-up + platform-up
+make secrets           # Slack 시크릿 설정
+make deploy-lambdas    # Lambda 코드 배포
+```
+
+## 전체 삭제
+
+```bash
+make all-down
+```
+
+`platform-down` (Helm uninstall) → `infra-down` (terraform destroy) 순서로 정리한다.
+
+## Make Targets
+
+| Target | 설명 |
+|--------|------|
+| `make infra-up` | Terraform apply + kubeconfig 설정 |
+| `make infra-down` | platform-down + terraform destroy |
+| `make platform-up` | Helm charts + K8s manifests 배포 |
+| `make platform-down` | Helm uninstall + manifest 삭제 |
+| `make all-up` | infra-up + platform-up |
+| `make all-down` | platform-down + infra-down |
+| `make deploy-lambdas` | Lambda 함수 코드 업데이트 |
+| `make deploy-layer` | Lambda Layer 배포 |
+| `make secrets` | Slack/MCP 시크릿 인터랙티브 설정 |
+| `make scale-down` | 노드 그룹 0으로 스케일 (비용 절감) |
+| `make scale-up` | 노드 그룹 복구 |
+| `make status` | 클러스터 상태 확인 |
+| `make lint` | ruff + yamllint + terraform fmt check |
+| `make test` | pytest 실행 |
+| `make build` | Lambda layer + 함수 패키징 |
+| `make backup-db` | DynamoDB 온디맨드 백업 |
+| `make clean` | 빌드 아티팩트 정리 |
+
+## Directory Structure
+
+```
+.
+├── app/                        # Lambda 함수 코드 (Python 3.12)
+│   ├── agents/                 # AI Agent handlers
+│   │   ├── summary/            #   이벤트 요약 (Haiku)
+│   │   ├── triage/             #   심각도 분류 (Haiku)
+│   │   ├── solution/           #   대응 추천 (Sonnet + RAG)
+│   │   └── remediation/        #   대응 실행 (Sonnet + MCP tool-use)
+│   ├── ingestor/               # SQS → Step Functions 트리거
+│   ├── slack_bot/              # Slack 이벤트/커맨드/승인 처리
+│   ├── degraded_notifier/      # AI 실패 시 fallback Slack 알림
+│   └── shared/                 # 공통 모듈 (Bedrock, DynamoDB, Slack, secrets)
+├── terraform/
+│   ├── modules/                # 재사용 Terraform 모듈
+│   │   ├── vpc/                #   VPC, 서브넷, NAT, Flow Logs
+│   │   ├── eks/                #   EKS 클러스터, 노드 그룹, Pod Identity
+│   │   ├── iam/                #   IAM 역할/정책
+│   │   ├── guardduty/          #   GuardDuty, Security Hub, EventBridge
+│   │   ├── sns-sqs/            #   SNS 토픽, SQS 큐, DLQ
+│   │   ├── lambda/             #   Lambda 함수, Layer, Step Functions
+│   │   ├── slack/              #   API Gateway + Slack Bot Lambda
+│   │   ├── s3/                 #   S3 버킷 (runbooks, forensics, logs)
+│   │   ├── kms/                #   KMS 키 + alias
+│   │   └── opensearch/         #   OpenSearch Serverless (벡터 검색)
+│   └── envs/demo/              # Demo 환경 구성 (모듈 조합)
+├── kubernetes/
+│   ├── falco/                  # Falco Helm values + custom rules
+│   ├── tetragon/               # Tetragon TracingPolicies
+│   ├── monitoring/             # Prometheus, Grafana, Loki, Ingress
+│   ├── external-secrets/       # ESO + ExternalSecrets
+│   └── admission-policies/     # ValidatingAdmissionPolicy (CEL)
+├── tests/                      # pytest 단위 테스트
+├── docs/                       # 설계 문서 (Korean)
+├── .github/workflows/          # CI (lint + test + terraform validate)
+├── Makefile                    # 전체 빌드/배포/운영 자동화
+├── init.sh                     # S3 backend 부트스트랩
+└── AGENTS.md                   # 프로젝트 컨벤션
+```
+
+## Detection → Response Flow
+
+```
+1. 위협 발생 (컨테이너 내 악성 행위)
+   │
+2. 탐지 (Falco/Tetragon/GuardDuty)
+   │
+3. 이벤트 라우팅 (SNS/EventBridge → SQS)
+   │
+4. AI 분석 (Step Functions)
+   ├── Summary Agent: 원시 이벤트 → 구조화된 요약
+   ├── Triage Agent: 심각도 P1-P4 분류
+   ├── Solution Agent: KB 검색 + 대응 추천
+   └── Remediation Agent: 대응 실행 (tool-use)
+   │
+5. 대응 실행
+   ├── P1/P2: Slack 알림 → Human Approval → 자동 격리
+   ├── P3/P4: 자동 대응 또는 로그만
+   └── AI 실패 시: Degraded 모드 (raw alert → Slack)
+   │
+6. Pod 격리 순서
+   ├── Container Checkpoint (포렌식 증거 보존)
+   ├── Tetragon SIGKILL label (아웃바운드 즉시 차단)
+   ├── CiliumNetworkPolicy deny-all
+   └── Pod 삭제 + Deployment scale 0
+```
+
+## Observability
+
+- **Grafana**: `make status`로 ALB URL 확인 후 브라우저 접속 (admin / atdr-demo)
+- **Prometheus**: ATDR 전용 alert rules (Falco critical, Tetragon policy violation, eBPF throttling, node memory)
+- **Loki**: 컨테이너 로그 수집 + 쿼리
+
+<!-- TODO: Grafana 대시보드 스크린샷 -->
+
+## Security Hardening
+
+- EKS private + public endpoint (CIDR whitelist)
+- Cilium CNI (WireGuard 암호화 가능)
+- ValidatingAdmissionPolicy: privileged container, root UID, hostPath 차단
+- Pod Identity (IRSA 대체)
+- KMS 암호화 (S3, DynamoDB, SQS, Secrets Manager)
+- S3 Object Lock (포렌식 버킷 WORM)
+- Secrets Manager + External Secrets Operator
+
+## Attack Simulation
+
+5개 시나리오 (MITRE ATT&CK 매핑):
+
+| # | 시나리오 | Technique |
+|---|---------|-----------|
+| 1 | 크립토마이닝 | T1496 |
+| 2 | 권한 상승 / 컨테이너 탈출 | T1611 |
+| 3 | 시크릿 탈취 | T1552.007 |
+| 4 | DNS 터널링 | T1071.004 |
+| 5 | 래터럴 무브먼트 | T1210 |
+
+<!-- TODO: 공격 시뮬레이션 실행 방법 문서화 -->
+
+## Development
+
+```bash
+make lint          # ruff + yamllint + terraform fmt
+make lint-fix      # 자동 수정
+make test          # pytest (49 tests)
+make build         # Lambda layer + 함수 패키징
+```
+
+Pre-commit hooks가 설정되어 있어 커밋 시 자동으로 lint/format/validate가 실행된다.
+
+## Cost
+
+| 리소스 | 월 예상 비용 |
+|--------|-------------|
+| EKS 클러스터 | ~$72 |
+| t3.large + c5.large 노드 | ~$145 |
+| NAT Gateway | ~$33 |
+| OpenSearch Serverless (2 OCU min) | ~$345 |
+| 기타 (GuardDuty, Lambda, S3, DDB 등) | ~$20 |
+| **합계** | **~$615/월** |
+
+실험 끝나면 `make all-down`으로 전부 내린다. 중간에 `make scale-down`으로 노드만 내리면 EC2 비용을 절약할 수 있다.
+
+## Team
+
+선린인터넷고등학교 3학년 캡스톤 프로젝트 (4인)
+
+## License
+
+MIT
