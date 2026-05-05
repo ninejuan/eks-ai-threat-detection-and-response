@@ -35,13 +35,20 @@ platform-up:
 	helm repo add external-secrets https://charts.external-secrets.io 2>/dev/null || true
 	helm repo update eks falcosecurity cilium prometheus-community grafana external-secrets
 	@echo "--- AWS Load Balancer Controller ---"
-	$(HLM) upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller \
+	@$(KCTL) delete mutatingwebhookconfigurations aws-load-balancer-webhook --ignore-not-found
+	@$(KCTL) delete validatingwebhookconfigurations aws-load-balancer-webhook --ignore-not-found
+	@$(KCTL) delete secret aws-load-balancer-tls -n kube-system --ignore-not-found
+	@$(KCTL) delete secret aws-load-balancer-serving-cert -n kube-system --ignore-not-found
+	$(HLM) uninstall aws-load-balancer-controller -n kube-system 2>/dev/null || true
+	$(HLM) install aws-load-balancer-controller eks/aws-load-balancer-controller \
 		-n kube-system \
 		--set clusterName=$(CLUSTER_NAME) \
 		--set serviceAccount.create=true \
 		--set serviceAccount.name=aws-load-balancer-controller \
 		--set region=$(REGION) \
 		--set vpcId=$$(aws eks describe-cluster --name $(CLUSTER_NAME) --region $(REGION) --query 'cluster.resourcesVpcConfig.vpcId' --output text)
+	@echo "Waiting for LB Controller to be ready..."
+	@$(KCTL) rollout status deployment/aws-load-balancer-controller -n kube-system --timeout=120s
 	@echo "--- Falco ---"
 	$(HLM) upgrade --install falco falcosecurity/falco \
 		-n falco --create-namespace \
@@ -49,6 +56,8 @@ platform-up:
 	@echo "--- Tetragon ---"
 	$(HLM) upgrade --install tetragon cilium/tetragon \
 		-n tetragon --create-namespace
+	@echo "Waiting for Tetragon CRDs..."
+	@$(KCTL) wait --for=condition=Established crd/tracingpolicies.cilium.io --timeout=60s
 	$(KCTL) apply -f kubernetes/tetragon/tracing-policies.yaml
 	@echo "--- kube-prometheus-stack ---"
 	$(HLM) upgrade --install monitoring prometheus-community/kube-prometheus-stack \
@@ -63,6 +72,10 @@ platform-up:
 	@echo "--- External Secrets Operator ---"
 	$(HLM) upgrade --install external-secrets external-secrets/external-secrets \
 		-n external-secrets --create-namespace
+	@echo "Waiting for ESO CRDs..."
+	@$(KCTL) wait --for=condition=Established crd/clustersecretstores.external-secrets.io --timeout=60s
+	@$(KCTL) wait --for=condition=Established crd/externalsecrets.external-secrets.io --timeout=60s
+	$(KCTL) create namespace atdr --dry-run=client -o yaml | $(KCTL) apply -f -
 	$(KCTL) apply -f kubernetes/external-secrets/external-secrets.yaml
 	@echo "--- Admission Policies ---"
 	$(KCTL) apply -f kubernetes/admission-policies/policies.yaml
