@@ -24,12 +24,12 @@ locals {
 }
 
 resource "aws_security_group" "lambda" {
-  name        = "${var.project}-lambda-sg"
+  name        = "${var.project}-sg-lambda"
   description = "Lambda agent security group"
   vpc_id      = var.vpc_id
 
   tags = {
-    Name = "${var.project}-lambda-sg"
+    Name = "${var.project}-sg-lambda"
   }
 }
 

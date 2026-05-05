@@ -17,7 +17,7 @@ resource "aws_subnet" "public" {
   map_public_ip_on_launch = true
 
   tags = {
-    Name                     = "${var.project}-public-${count.index + 1}"
+    Name                     = "${var.project}-subnet-public-${element(split("-", var.availability_zones[count.index]), 2)}"
     "kubernetes.io/role/elb" = "1"
   }
 }
@@ -29,7 +29,7 @@ resource "aws_subnet" "private" {
   availability_zone = var.availability_zones[count.index]
 
   tags = {
-    Name                              = "${var.project}-private-${count.index + 1}"
+    Name                              = "${var.project}-subnet-private-${element(split("-", var.availability_zones[count.index]), 2)}"
     "kubernetes.io/role/internal-elb" = "1"
   }
 }
@@ -46,7 +46,7 @@ resource "aws_eip" "nat" {
   domain = "vpc"
 
   tags = {
-    Name = "${var.project}-nat-eip"
+    Name = "${var.project}-eip-nat"
   }
 }
 
@@ -57,7 +57,7 @@ resource "aws_nat_gateway" "main" {
   depends_on = [aws_internet_gateway.main]
 
   tags = {
-    Name = "${var.project}-nat"
+    Name = "${var.project}-natgw"
   }
 }
 
@@ -70,7 +70,7 @@ resource "aws_route_table" "public" {
   }
 
   tags = {
-    Name = "${var.project}-public-rt"
+    Name = "${var.project}-rt-public"
   }
 }
 
@@ -83,7 +83,7 @@ resource "aws_route_table" "private" {
   }
 
   tags = {
-    Name = "${var.project}-private-rt"
+    Name = "${var.project}-rt-private"
   }
 }
 
@@ -106,6 +106,6 @@ resource "aws_flow_log" "main" {
   log_destination_type = "s3"
 
   tags = {
-    Name = "${var.project}-flow-log"
+    Name = "${var.project}-vpc-flow-log"
   }
 }

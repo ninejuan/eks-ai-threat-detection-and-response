@@ -35,12 +35,12 @@ resource "aws_eks_cluster" "main" {
 }
 
 resource "aws_security_group" "cluster" {
-  name        = "${var.cluster_name}-cluster-sg"
+  name        = "${var.cluster_name}-sg-cluster"
   description = "EKS cluster security group"
   vpc_id      = var.vpc_id
 
   tags = {
-    Name = "${var.cluster_name}-cluster-sg"
+    Name = "${var.cluster_name}-sg-cluster"
   }
 }
 
@@ -55,7 +55,7 @@ resource "aws_security_group_rule" "cluster_egress" {
 
 resource "aws_eks_node_group" "general" {
   cluster_name    = aws_eks_cluster.main.name
-  node_group_name = "${var.cluster_name}-general"
+  node_group_name = "${var.cluster_name}-ng-general"
   node_role_arn   = var.node_role_arn
   subnet_ids      = var.private_subnet_ids
 
@@ -76,13 +76,13 @@ resource "aws_eks_node_group" "general" {
   }
 
   tags = {
-    Name = "${var.cluster_name}-general"
+    Name = "${var.cluster_name}-ng-general"
   }
 }
 
 resource "aws_eks_node_group" "compute" {
   cluster_name    = aws_eks_cluster.main.name
-  node_group_name = "${var.cluster_name}-compute"
+  node_group_name = "${var.cluster_name}-ng-compute"
   node_role_arn   = var.node_role_arn
   subnet_ids      = var.private_subnet_ids
 
@@ -99,7 +99,7 @@ resource "aws_eks_node_group" "compute" {
   }
 
   tags = {
-    Name = "${var.cluster_name}-compute"
+    Name = "${var.cluster_name}-ng-compute"
   }
 }
 
