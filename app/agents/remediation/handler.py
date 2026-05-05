@@ -196,9 +196,6 @@ def lambda_handler(event: dict, context) -> dict:
 
 
 def _execute_tool(tool_name: str, tool_input: dict) -> dict:
-    logger.info("Executing tool: %s with input: %s", tool_name, json.dumps(tool_input))
-    return {
-        "status": "success",
-        "message": f"Tool {tool_name} executed successfully (MCP integration pending)",
-        "input": tool_input,
-    }
+    from app.agents.remediation.tools import execute_tool
+
+    return execute_tool(tool_name, tool_input)

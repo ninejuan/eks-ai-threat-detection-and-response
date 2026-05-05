@@ -151,6 +151,11 @@ all-down:
 
 secrets:
 	@echo "=== ATDR Secrets Setup ==="
+	@echo "Get these from https://api.slack.com/apps → Your App:"
+	@echo "  - Bot Token: OAuth & Permissions → Bot User OAuth Token"
+	@echo "  - Webhook URL: Incoming Webhooks → Webhook URL"
+	@echo "  - Signing Secret: Basic Information → App Credentials → Signing Secret"
+	@echo ""
 	@read -p "Slack Bot Token (xoxb-...): " token && \
 		read -p "Slack Webhook URL: " webhook && \
 		aws secretsmanager put-secret-value \
@@ -164,13 +169,17 @@ secrets:
 			--secret-string "{\"secret\":\"$$secret\"}" \
 			--region $(REGION) --no-cli-pager && \
 		echo "  atdr/slack/signing-secret: done"
-	@read -p "MCP Auth Token: " mcp_token && \
-		aws secretsmanager put-secret-value \
-			--secret-id atdr/mcp/auth-token \
-			--secret-string "{\"token\":\"$$mcp_token\"}" \
-			--region $(REGION) --no-cli-pager && \
-		echo "  atdr/mcp/auth-token: done"
-	@echo "=== All secrets configured ==="
+	@read -p "MCP Auth Token (enter to skip): " mcp_token && \
+		if [ -n "$$mcp_token" ]; then \
+			aws secretsmanager put-secret-value \
+				--secret-id atdr/mcp/auth-token \
+				--secret-string "{\"token\":\"$$mcp_token\"}" \
+				--region $(REGION) --no-cli-pager && \
+			echo "  atdr/mcp/auth-token: done"; \
+		else \
+			echo "  atdr/mcp/auth-token: skipped"; \
+		fi
+	@echo "=== Secrets configured ==="
 
 ## ─── Scaling ─────────────────────────────────────────────────────
 

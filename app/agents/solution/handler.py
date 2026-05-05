@@ -43,15 +43,21 @@ def lambda_handler(event: dict, context) -> dict:
     summary = event.get("summary", {}).get("body", {})
     triage = event.get("triage", {}).get("body", {})
 
+    kb_context = _retrieve_runbook_context(config, summary, triage)
+
     context_json = json.dumps(
         {"summary": summary, "triage": triage},
         indent=2,
         ensure_ascii=False,
     )
 
+    user_message = f"Recommend remediation for this incident:\n\n{context_json}"
+    if kb_context:
+        user_message += f"\n\nRelevant runbook context from Knowledge Base:\n{kb_context}"
+
     response_text = client.invoke(
         system_prompt=SYSTEM_PROMPT,
-        user_message=f"Recommend remediation for this incident:\n\n{context_json}",
+        user_message=user_message,
         max_tokens=4096,
     )
 
@@ -69,3 +75,31 @@ def lambda_handler(event: dict, context) -> dict:
         }
 
     return solution
+
+
+def _retrieve_runbook_context(config: Config, summary: dict, triage: dict) -> str:
+    from app.shared.knowledge_base import KnowledgeBaseClient
+
+    if not config.knowledge_base_id:
+        return ""
+
+    kb = KnowledgeBaseClient(knowledge_base_id=config.knowledge_base_id, region=config.region)
+
+    query = (
+        f"Security incident: {summary.get('title', '')}. "
+        f"Category: {triage.get('category', 'unknown')}. "
+        f"Severity: {triage.get('severity', 'unknown')}. "
+        f"What is the recommended remediation procedure?"
+    )
+
+    results = kb.retrieve(query, max_results=3)
+    if not results:
+        return ""
+
+    context_parts = []
+    for r in results:
+        source = r.get("source", "unknown")
+        content = r.get("content", "")
+        context_parts.append(f"[Source: {source}]\n{content}")
+
+    return "\n---\n".join(context_parts)

@@ -13,3 +13,4 @@ class Config:
     knowledge_base_id: str = field(default_factory=lambda: os.environ.get("KNOWLEDGE_BASE_ID", ""))
     state_machine_arn: str = field(default_factory=lambda: os.environ.get("STATE_MACHINE_ARN", ""))
     dynamodb_table_name: str = field(default_factory=lambda: os.environ.get("DYNAMODB_TABLE_NAME", ""))
+    eks_cluster_name: str = field(default_factory=lambda: os.environ.get("EKS_CLUSTER_NAME", "atdr-demo"))

@@ -50,3 +50,8 @@ variable "knowledge_base_id" {
   type        = string
   default     = ""
 }
+
+variable "eks_cluster_name" {
+  description = "EKS cluster name for Remediation Agent"
+  type        = string
+}

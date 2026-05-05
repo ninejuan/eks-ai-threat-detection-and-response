@@ -37,7 +37,12 @@ select = [
 ignore = [
     "S101",
     "TRY003",
+    "TRY300",
+    "TRY400",
     "PLR0913",
+    "PLR2004",
+    "PLC0415",
+    "PERF401",
     "ERA001",
 ]
 

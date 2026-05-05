@@ -92,6 +92,7 @@ module "lambda" {
   step_functions_role_arn = module.iam.step_functions_role_arn
   sqs_queue_arn           = module.sns_sqs.sqs_queue_arn
   opensearch_endpoint     = module.opensearch.collection_endpoint
+  eks_cluster_name        = module.eks.cluster_name
 }
 
 module "slack" {

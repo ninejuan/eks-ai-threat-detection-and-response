@@ -76,6 +76,7 @@ resource "aws_lambda_function" "agent" {
       BEDROCK_MODEL_ID    = each.value.model_id
       OPENSEARCH_ENDPOINT = var.opensearch_endpoint
       KNOWLEDGE_BASE_ID   = var.knowledge_base_id
+      EKS_CLUSTER_NAME    = var.eks_cluster_name
       PROJECT             = var.project
       LOG_LEVEL           = "INFO"
     }

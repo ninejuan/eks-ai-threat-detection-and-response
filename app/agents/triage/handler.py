@@ -55,4 +55,24 @@ def lambda_handler(event: dict, context) -> dict:
             "requires_approval": True,
         }
 
+    _notify_slack(triage, summary)
     return triage
+
+
+def _notify_slack(triage: dict, summary: dict) -> None:
+    from app.shared.slack_notifier import SlackNotifier
+
+    config = Config()
+    notifier = SlackNotifier(project=config.project)
+
+    incident = {
+        "incident_id": summary.get("incident_id", "unknown"),
+        "severity": triage.get("severity", "UNKNOWN"),
+        "source": summary.get("source", "unknown"),
+        "summary": summary.get("summary", "No summary"),
+        "category": triage.get("category", "unknown"),
+        "reasoning": triage.get("reasoning", ""),
+        "requires_approval": triage.get("requires_approval", True),
+    }
+
+    notifier.send_incident(incident)

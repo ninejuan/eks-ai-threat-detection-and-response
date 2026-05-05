@@ -1,4 +1,4 @@
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from app.agents.remediation import handler
 
@@ -21,7 +21,10 @@ def test_lambda_handler_executes_tool_use_loop(monkeypatch, context):
     ]
     monkeypatch.setattr(handler, "BedrockClient", lambda model_id, region: client)
 
-    result = handler.lambda_handler({"solution": {"body": {"recommended_actions": []}}}, context)
+    with patch(
+        "app.agents.remediation.tools.execute_tool", return_value={"status": "success", "action": "checkpoint_pod"}
+    ):
+        result = handler.lambda_handler({"solution": {"body": {"recommended_actions": []}}}, context)
 
     assert result["status"] == "completed"
     assert result["actions_taken"] == 1
@@ -44,12 +47,14 @@ def test_lambda_handler_completes_without_tool_use(monkeypatch, context):
     assert result["execution_log"] == [{"type": "completion", "text": "nothing"}]
 
 
-def test_execute_tool_returns_success_result():
-    result = handler._execute_tool("label_pod", {"pod_name": "pod-a", "namespace": "default", "labels": {"x": "y"}})
+def test_execute_tool_calls_real_tools():
+    with patch(
+        "app.agents.remediation.tools.execute_tool", return_value={"status": "success", "action": "label_pod"}
+    ) as mock_exec:
+        result = handler._execute_tool("label_pod", {"pod_name": "pod-a", "namespace": "default", "labels": {"x": "y"}})
 
+    mock_exec.assert_called_once_with("label_pod", {"pod_name": "pod-a", "namespace": "default", "labels": {"x": "y"}})
     assert result["status"] == "success"
-    assert result["message"] == "Tool label_pod executed successfully (MCP integration pending)"
-    assert result["input"]["labels"] == {"x": "y"}
 
 
 def test_lambda_handler_stops_after_max_iterations(monkeypatch, context):
@@ -62,7 +67,8 @@ def test_lambda_handler_stops_after_max_iterations(monkeypatch, context):
     }
     monkeypatch.setattr(handler, "BedrockClient", lambda model_id, region: client)
 
-    result = handler.lambda_handler({}, context)
+    with patch("app.agents.remediation.tools.execute_tool", return_value={"status": "success", "action": "delete_pod"}):
+        result = handler.lambda_handler({}, context)
 
     assert result["actions_taken"] == 10
     assert client.invoke_with_tools.call_count == 10

@@ -1,5 +1,5 @@
 import json
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from app.agents.triage import handler
 
@@ -17,7 +17,8 @@ def test_lambda_handler_returns_parsed_triage(monkeypatch, context):
     client.invoke.return_value = json.dumps(triage)
     monkeypatch.setattr(handler, "BedrockClient", lambda model_id, region: client)
 
-    result = handler.lambda_handler({"summary": {"body": {"summary": "miner"}}}, context)
+    with patch.object(handler, "_notify_slack"):
+        result = handler.lambda_handler({"summary": {"body": {"summary": "miner"}}}, context)
 
     assert result == triage
     assert "Triage this security incident" in client.invoke.call_args.kwargs["user_message"]
@@ -28,7 +29,8 @@ def test_lambda_handler_json_parse_failure_fallback(monkeypatch, context):
     client.invoke.return_value = "not-json"
     monkeypatch.setattr(handler, "BedrockClient", lambda model_id, region: client)
 
-    result = handler.lambda_handler({"summary": {"body": {"title": "bad"}}}, context)
+    with patch.object(handler, "_notify_slack"):
+        result = handler.lambda_handler({"summary": {"body": {"title": "bad"}}}, context)
 
     assert result["severity"] == "P2"
     assert result["confidence"] == 0.5
@@ -42,7 +44,8 @@ def test_lambda_handler_uses_event_when_summary_missing(monkeypatch, context):
     client.invoke.return_value = json.dumps({"severity": "P4"})
     monkeypatch.setattr(handler, "BedrockClient", lambda model_id, region: client)
 
-    result = handler.lambda_handler({"raw_event": {"rule": "scan"}}, context)
+    with patch.object(handler, "_notify_slack"):
+        result = handler.lambda_handler({"raw_event": {"rule": "scan"}}, context)
 
     assert result == {"severity": "P4"}
     user_message = client.invoke.call_args.kwargs["user_message"]
