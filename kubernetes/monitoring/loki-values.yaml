@@ -27,6 +27,7 @@ singleBinary:
       memory: 1Gi
   persistence:
     enabled: true
+    storageClassName: gp3
     size: 10Gi
 
 backend:

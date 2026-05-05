@@ -48,3 +48,8 @@ variable "endpoint_public_access_cidrs" {
   type        = list(string)
   default     = ["0.0.0.0/0"]
 }
+
+variable "ebs_csi_role_arn" {
+  description = "IAM role ARN for EBS CSI Driver Pod Identity"
+  type        = string
+}

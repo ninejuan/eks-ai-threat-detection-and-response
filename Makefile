@@ -20,7 +20,6 @@ infra-up: build
 	@$(MAKE) -s slack-manifest
 
 infra-down:
-	$(MAKE) platform-down || true
 	cd $(TF_DIR) && terraform destroy -auto-approve
 
 ## ─── Platform (Kubernetes components) ────────────────────────────
@@ -35,12 +34,9 @@ platform-up:
 	helm repo add external-secrets https://charts.external-secrets.io 2>/dev/null || true
 	helm repo update eks falcosecurity cilium prometheus-community grafana external-secrets
 	@echo "--- AWS Load Balancer Controller ---"
-	@$(KCTL) delete mutatingwebhookconfigurations aws-load-balancer-webhook --ignore-not-found
-	@$(KCTL) delete validatingwebhookconfigurations aws-load-balancer-webhook --ignore-not-found
-	@$(KCTL) delete secret aws-load-balancer-tls -n kube-system --ignore-not-found
-	@$(KCTL) delete secret aws-load-balancer-serving-cert -n kube-system --ignore-not-found
-	$(HLM) uninstall aws-load-balancer-controller -n kube-system 2>/dev/null || true
-	$(HLM) install aws-load-balancer-controller eks/aws-load-balancer-controller \
+	@$(KCTL) delete mutatingwebhookconfigurations aws-load-balancer-webhook --ignore-not-found 2>/dev/null
+	@$(KCTL) delete validatingwebhookconfigurations aws-load-balancer-webhook --ignore-not-found 2>/dev/null
+	$(HLM) upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller \
 		-n kube-system \
 		--set clusterName=$(CLUSTER_NAME) \
 		--set serviceAccount.create=true \
@@ -49,6 +45,8 @@ platform-up:
 		--set vpcId=$$(aws eks describe-cluster --name $(CLUSTER_NAME) --region $(REGION) --query 'cluster.resourcesVpcConfig.vpcId' --output text)
 	@echo "Waiting for LB Controller to be ready..."
 	@$(KCTL) rollout status deployment/aws-load-balancer-controller -n kube-system --timeout=120s
+	@echo "--- StorageClass (gp3) ---"
+	$(KCTL) apply -f kubernetes/storage/gp3-storageclass.yaml
 	@echo "--- Falco ---"
 	$(HLM) upgrade --install falco falcosecurity/falco \
 		-n falco --create-namespace \
@@ -82,16 +80,30 @@ platform-up:
 	@echo "=== Platform deployment complete ==="
 
 platform-down:
-	$(HLM) uninstall external-secrets -n external-secrets || true
-	$(HLM) uninstall loki -n monitoring || true
-	$(HLM) uninstall monitoring -n monitoring || true
-	$(HLM) uninstall tetragon -n tetragon || true
-	$(HLM) uninstall falco -n falco || true
-	$(HLM) uninstall aws-load-balancer-controller -n kube-system || true
-	$(KCTL) delete -f kubernetes/admission-policies/policies.yaml --ignore-not-found
-	$(KCTL) delete -f kubernetes/tetragon/tracing-policies.yaml --ignore-not-found
-	$(KCTL) delete -f kubernetes/external-secrets/external-secrets.yaml --ignore-not-found
-	$(KCTL) delete -f kubernetes/monitoring/grafana-ingress.yaml --ignore-not-found
+	@echo "=== Removing platform components ==="
+	@echo "--- Removing CRD resources (while controllers still running) ---"
+	@$(KCTL) delete -f kubernetes/external-secrets/external-secrets.yaml --ignore-not-found --timeout=30s 2>/dev/null || true
+	@$(KCTL) delete -f kubernetes/tetragon/tracing-policies.yaml --ignore-not-found --timeout=30s 2>/dev/null || true
+	@$(KCTL) delete -f kubernetes/admission-policies/policies.yaml --ignore-not-found --timeout=30s 2>/dev/null || true
+	@$(KCTL) delete -f kubernetes/monitoring/grafana-ingress.yaml --ignore-not-found --timeout=30s 2>/dev/null || true
+	@$(KCTL) delete -f kubernetes/storage/gp3-storageclass.yaml --ignore-not-found --timeout=30s 2>/dev/null || true
+	@echo "--- Removing webhook configurations ---"
+	@$(KCTL) delete mutatingwebhookconfigurations -l app.kubernetes.io/managed-by=Helm --ignore-not-found 2>/dev/null || true
+	@$(KCTL) delete validatingwebhookconfigurations -l app.kubernetes.io/managed-by=Helm --ignore-not-found 2>/dev/null || true
+	@echo "--- Uninstalling Helm releases ---"
+	@$(HLM) uninstall aws-load-balancer-controller -n kube-system --no-hooks --timeout=60s 2>/dev/null || true
+	@$(HLM) uninstall external-secrets -n external-secrets --no-hooks --timeout=60s 2>/dev/null || true
+	@$(HLM) uninstall monitoring -n monitoring --no-hooks --timeout=60s 2>/dev/null || true
+	@$(HLM) uninstall loki -n monitoring --no-hooks --timeout=60s 2>/dev/null || true
+	@$(HLM) uninstall tetragon -n tetragon --no-hooks --timeout=60s 2>/dev/null || true
+	@$(HLM) uninstall falco -n falco --no-hooks --timeout=60s 2>/dev/null || true
+	@echo "--- Cleaning up namespaces ---"
+	@for ns in falco tetragon monitoring external-secrets atdr; do \
+		$(KCTL) delete ns $$ns --ignore-not-found --timeout=30s 2>/dev/null || \
+		($(KCTL) get ns $$ns -o json 2>/dev/null | python3 -c 'import json,sys; ns=json.load(sys.stdin); ns["spec"]["finalizers"]=[]; print(json.dumps(ns))' | \
+		$(KCTL) replace --raw "/api/v1/namespaces/$$ns/finalize" -f - 2>/dev/null) || true; \
+	done
+	@echo "=== Platform removed ==="
 
 ## ─── Lambda Deployment ───────────────────────────────────────────
 

@@ -52,6 +52,7 @@ module "eks" {
   falco_pod_role_arn           = module.iam.falco_pod_role_arn
   external_secrets_role_arn    = module.iam.external_secrets_role_arn
   aws_lb_controller_role_arn   = module.iam.aws_lb_controller_role_arn
+  ebs_csi_role_arn             = module.iam.ebs_csi_role_arn
   vpc_id                       = module.vpc.vpc_id
   private_subnet_ids           = module.vpc.private_subnet_ids
   endpoint_public_access_cidrs = var.endpoint_public_access_cidrs

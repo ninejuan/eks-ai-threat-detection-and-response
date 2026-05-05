@@ -11,6 +11,7 @@ prometheus:
     storageSpec:
       volumeClaimTemplate:
         spec:
+          storageClassName: gp3
           accessModes: ["ReadWriteOnce"]
           resources:
             requests:
@@ -47,6 +48,7 @@ grafana:
       memory: 512Mi
   persistence:
     enabled: true
+    storageClassName: gp3
     size: 10Gi
   dashboardProviders:
     dashboardproviders.yaml:
