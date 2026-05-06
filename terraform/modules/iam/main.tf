@@ -182,6 +182,7 @@ resource "aws_iam_role_policy" "lambda_agent" {
           "dynamodb:GetItem",
           "dynamodb:UpdateItem",
           "dynamodb:Query",
+          "dynamodb:Scan",
         ]
         Resource = "arn:aws:dynamodb:${var.region}:${local.account_id}:table/${var.project}-*"
       },
