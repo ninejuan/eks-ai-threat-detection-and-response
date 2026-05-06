@@ -1,6 +1,8 @@
 import json
 import logging
 import re
+import time
+from datetime import UTC, datetime
 from urllib.request import Request, urlopen
 
 from app.shared.secrets import get_secret
@@ -9,6 +11,8 @@ logger = logging.getLogger(__name__)
 
 
 SLACK_MAX_TEXT_LENGTH = 2900
+SEVERITY_COLORS = {"P1": "danger", "P2": "warning", "P3": "warning", "P4": "#9CA3AF"}
+SEVERITY_EMOJI = {"P1": "🔴", "P2": "🟠", "P3": "🟡", "P4": "⚪"}
 
 
 def to_slack_mrkdwn(text: str) -> str:
@@ -17,6 +21,21 @@ def to_slack_mrkdwn(text: str) -> str:
     result = re.sub(r"__(.+?)__", r"_\1_", result)
     result = re.sub(r"```(\w*)\n", "```\n", result)
     return re.sub(r"#{1,6}\s+(.+)", r"*\1*", result)
+
+
+def severity_emoji(severity: str | None) -> str:
+    return SEVERITY_EMOJI.get(str(severity or "").upper(), "⚪")
+
+
+def severity_color(severity: str | None) -> str:
+    return SEVERITY_COLORS.get(str(severity or "").upper(), "#9CA3AF")
+
+
+def slack_date(value: object, fallback: str = "unknown") -> str:
+    timestamp = _epoch_seconds(value)
+    if timestamp is None:
+        return fallback
+    return f"<!date^{timestamp}^{{date_short_pretty}} {{time}}|{fallback}>"
 
 
 class SlackNotifier:
@@ -46,6 +65,12 @@ class SlackNotifier:
         source = incident.get("source", "UNKNOWN")
         summary = to_slack_mrkdwn(incident.get("summary", "No summary available"))
         incident_id = incident.get("incident_id", "N/A")
+        title = to_slack_mrkdwn(incident.get("title", "Security incident"))
+        mitre = _mitre_display(incident)
+        resources = _affected_resources(incident)
+        escalation = ""
+        if str(severity).upper() == "P1" and not incident.get("acknowledged_at"):
+            escalation = "\n<!channel> if not acknowledged within 5 minutes."
 
         return [
             {
@@ -55,13 +80,47 @@ class SlackNotifier:
             {
                 "type": "section",
                 "fields": [
-                    {"type": "mrkdwn", "text": f"*Severity:* {severity}"},
+                    {
+                        "type": "mrkdwn",
+                        "text": f"*Severity:* {severity} {severity_emoji(severity)} ({severity_color(severity)})",
+                    },
                     {"type": "mrkdwn", "text": f"*Source:* {source}"},
+                    {"type": "mrkdwn", "text": f"*Created:* {slack_date(incident.get('created_at'), 'created')}"},
+                    {"type": "mrkdwn", "text": f"*MITRE:* {mitre}"},
                 ],
             },
             {
                 "type": "section",
-                "text": {"type": "mrkdwn", "text": f"*Summary:*\n{summary}"},
+                "text": {"type": "mrkdwn", "text": f"*{title}*\n{summary}{escalation}"},
+            },
+            {
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": f"*Affected resources:*\n{resources}"},
+            },
+            {
+                "type": "actions",
+                "elements": [
+                    {
+                        "type": "button",
+                        "text": {"type": "plain_text", "text": "Acknowledge"},
+                        "action_id": "ack_incident",
+                        "value": incident_id,
+                        "style": "primary",
+                    },
+                    {
+                        "type": "button",
+                        "text": {"type": "plain_text", "text": "Investigate"},
+                        "action_id": "investigate_incident",
+                        "value": incident_id,
+                    },
+                    {
+                        "type": "button",
+                        "text": {"type": "plain_text", "text": "Escalate"},
+                        "action_id": "escalate_incident",
+                        "value": incident_id,
+                        "style": "danger",
+                    },
+                ],
             },
         ]
 
@@ -97,3 +156,64 @@ class SlackNotifier:
                 "text": {"type": "mrkdwn", "text": f"*Raw Event:*\n```{raw_alert}```"},
             },
         ]
+
+
+def _mitre_display(incident: dict) -> str:
+    value = (
+        incident.get("mitre")
+        or incident.get("mitre_attack")
+        or incident.get("technique")
+        or incident.get("technique_id")
+        or "Not mapped"
+    )
+    if isinstance(value, dict):
+        value = value.get("id") or value.get("technique_id") or ", ".join(str(v) for v in value.values())
+    if isinstance(value, list):
+        value = ", ".join(str(item) for item in value)
+    return to_slack_mrkdwn(str(value))
+
+
+def _affected_resources(incident: dict) -> str:
+    resources = incident.get("affected_resources") or incident.get("resources") or []
+    if isinstance(resources, str):
+        resources = [resources]
+    if not resources:
+        resources = [
+            value
+            for value in [
+                f"pod/{incident.get('pod') or incident.get('pod_name')}"
+                if incident.get("pod") or incident.get("pod_name")
+                else None,
+                f"node/{incident.get('node') or incident.get('node_name')}"
+                if incident.get("node") or incident.get("node_name")
+                else None,
+                f"namespace/{incident.get('namespace')}" if incident.get("namespace") else None,
+            ]
+            if value
+        ]
+    evidence_count = len(set(re.findall(r"s3://[^\s\"'<>]+", json.dumps(incident, ensure_ascii=False))))
+    lines = [f"• `{resource}`" for resource in resources[:8]] or ["• Not recorded"]
+    if evidence_count:
+        lines.append(f"• {evidence_count} forensic evidence object(s) attached")
+    return "\n".join(lines)
+
+
+def _epoch_seconds(value: object) -> int | None:
+    if value is None or value == "":
+        return int(time.time())
+    if isinstance(value, int | float):
+        return int(value)
+    if isinstance(value, datetime):
+        return int(value.timestamp())
+    text = str(value).replace("Z", "+00:00")
+    try:
+        return int(float(text))
+    except ValueError:
+        pass
+    try:
+        parsed = datetime.fromisoformat(text)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=UTC)
+        return int(parsed.timestamp())
+    except ValueError:
+        return None

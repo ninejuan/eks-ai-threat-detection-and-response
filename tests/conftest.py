@@ -22,6 +22,12 @@ def mock_env(monkeypatch):
     monkeypatch.setenv("MCP_AUTH_SECRET_ID", "test/mcp/auth-token")
     monkeypatch.setenv("MCP_SERVER_URL_SECRET_ID", "test/mcp/server-url")
     monkeypatch.setenv("MCP_TIMEOUT_SECONDS", "3")
+    monkeypatch.setenv("ONCALL_USER", "<@UONCALL>")
+    monkeypatch.setenv("ONCALL_CHANNEL", "C-ONCALL")
+    monkeypatch.setenv("ESCALATION_CHANNEL", "C-ESC")
+    monkeypatch.setenv("ALERTS_CHANNEL_P1", "C-P1")
+    monkeypatch.setenv("ALERTS_CHANNEL_P2", "C-P2")
+    monkeypatch.setenv("FORENSICS_BUCKET", "test-forensics")
 
 
 @pytest.fixture(autouse=True)
@@ -74,16 +80,24 @@ def stepfunctions_client():
 
 
 @pytest.fixture
+def s3_client():
+    client = MagicMock()
+    client.generate_presigned_url.return_value = "https://signed.example/evidence"
+    return client
+
+
+@pytest.fixture
 def sqs_client():
     return MagicMock()
 
 
 @pytest.fixture
-def boto3_clients(monkeypatch, bedrock_runtime_client, secretsmanager_client, stepfunctions_client):
+def boto3_clients(monkeypatch, bedrock_runtime_client, secretsmanager_client, stepfunctions_client, s3_client):
     clients = {
         "bedrock-runtime": bedrock_runtime_client,
         "secretsmanager": secretsmanager_client,
         "stepfunctions": stepfunctions_client,
+        "s3": s3_client,
         "sqs": MagicMock(),
     }
 

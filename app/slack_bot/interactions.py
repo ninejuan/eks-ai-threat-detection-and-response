@@ -9,6 +9,7 @@ from urllib.request import Request, urlopen
 import boto3
 
 from app.shared.config import Config
+from app.slack_bot.oncall import ack_response, escalate_response, investigate_response
 
 logger = logging.getLogger(__name__)
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
@@ -39,6 +40,14 @@ def _handle_approval_action(payload: dict, config: Config) -> dict:
     value = action.get("value", "")
     user = payload.get("user", {}).get("username", "unknown")
     response_url = payload.get("response_url", "")
+
+    if action_id in {"ack_incident", "investigate_incident", "escalate_incident"}:
+        incident_id = value or "unknown"
+        if action_id == "ack_incident":
+            return ack_response(config, incident_id, user=f"<@{user}>")
+        if action_id == "investigate_incident":
+            return investigate_response(config, incident_id, user=f"<@{user}>")
+        return escalate_response(config, incident_id, user=f"<@{user}>")
 
     parts = value.split("|") if value else []
     incident_id = parts[0] if parts else "unknown"
