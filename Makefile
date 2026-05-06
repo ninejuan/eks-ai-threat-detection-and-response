@@ -89,6 +89,7 @@ platform-up:
 		-f kubernetes/monitoring/loki-values.yaml
 	@echo "--- Grafana Ingress ---"
 	$(KCTL) apply -f kubernetes/monitoring/grafana-ingress.yaml
+	$(KCTL) apply -f kubernetes/monitoring/atdr-dashboard.yaml
 	@echo "--- External Secrets Operator ---"
 	$(HLM) upgrade --install external-secrets external-secrets/external-secrets \
 		-n external-secrets --create-namespace

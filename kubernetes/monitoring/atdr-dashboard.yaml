@@ -1,0 +1,135 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: atdr-security-overview-dashboard
+  namespace: monitoring
+  labels:
+    grafana_dashboard: "1"
+    app.kubernetes.io/name: atdr-security-overview
+    app.kubernetes.io/part-of: atdr
+data:
+  atdr-security-overview.json: |-
+    {
+      "uid": "atdr-security-overview",
+      "title": "ATDR Security Overview",
+      "tags": ["atdr", "eks", "security"],
+      "timezone": "browser",
+      "schemaVersion": 39,
+      "version": 1,
+      "refresh": "30s",
+      "time": {
+        "from": "now-6h",
+        "to": "now"
+      },
+      "panels": [
+        {
+          "type": "stat",
+          "title": "Cluster Ready Nodes",
+          "gridPos": {"h": 4, "w": 6, "x": 0, "y": 0},
+          "targets": [
+            {
+              "expr": "sum(kube_node_status_condition{condition=\"Ready\",status=\"true\"})",
+              "legendFormat": "ready nodes"
+            }
+          ],
+          "datasource": {"type": "prometheus", "uid": "prometheus"}
+        },
+        {
+          "type": "stat",
+          "title": "ATDR MCP Server Ready",
+          "gridPos": {"h": 4, "w": 6, "x": 6, "y": 0},
+          "targets": [
+            {
+              "expr": "sum(kube_deployment_status_replicas_available{namespace=\"atdr\",deployment=\"eks-mcp-server\"})",
+              "legendFormat": "available replicas"
+            }
+          ],
+          "datasource": {"type": "prometheus", "uid": "prometheus"}
+        },
+        {
+          "type": "stat",
+          "title": "Falco Pods Ready",
+          "gridPos": {"h": 4, "w": 6, "x": 12, "y": 0},
+          "targets": [
+            {
+              "expr": "sum(kube_pod_status_ready{namespace=\"falco\",condition=\"true\"})",
+              "legendFormat": "ready pods"
+            }
+          ],
+          "datasource": {"type": "prometheus", "uid": "prometheus"}
+        },
+        {
+          "type": "stat",
+          "title": "Tetragon Pods Ready",
+          "gridPos": {"h": 4, "w": 6, "x": 18, "y": 0},
+          "targets": [
+            {
+              "expr": "sum(kube_pod_status_ready{namespace=\"tetragon\",condition=\"true\"})",
+              "legendFormat": "ready pods"
+            }
+          ],
+          "datasource": {"type": "prometheus", "uid": "prometheus"}
+        },
+        {
+          "type": "timeseries",
+          "title": "Security Agent CPU Usage",
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 4},
+          "targets": [
+            {
+              "expr": "sum by (namespace, pod) (rate(container_cpu_usage_seconds_total{namespace=~\"falco|tetragon|amazon-guardduty|atdr\",container!=\"\",pod!=\"\"}[5m]))",
+              "legendFormat": "{{ namespace }}/{{ pod }}"
+            }
+          ],
+          "datasource": {"type": "prometheus", "uid": "prometheus"}
+        },
+        {
+          "type": "timeseries",
+          "title": "Security Agent Memory Usage",
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 4},
+          "targets": [
+            {
+              "expr": "sum by (namespace, pod) (container_memory_working_set_bytes{namespace=~\"falco|tetragon|amazon-guardduty|atdr\",container!=\"\",pod!=\"\"})",
+              "legendFormat": "{{ namespace }}/{{ pod }}"
+            }
+          ],
+          "datasource": {"type": "prometheus", "uid": "prometheus"}
+        },
+        {
+          "type": "timeseries",
+          "title": "Falco Critical Events",
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 12},
+          "targets": [
+            {
+              "expr": "sum(rate(falco_events{priority=~\"Critical|Emergency\"}[5m]))",
+              "legendFormat": "critical falco events/sec"
+            }
+          ],
+          "datasource": {"type": "prometheus", "uid": "prometheus"}
+        },
+        {
+          "type": "timeseries",
+          "title": "Tetragon Policy Events",
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 12},
+          "targets": [
+            {
+              "expr": "sum(rate(tetragon_events_total[5m])) by (event_type)",
+              "legendFormat": "{{ event_type }}"
+            }
+          ],
+          "datasource": {"type": "prometheus", "uid": "prometheus"}
+        },
+        {
+          "type": "table",
+          "title": "ATDR Namespace Pods",
+          "gridPos": {"h": 8, "w": 24, "x": 0, "y": 20},
+          "targets": [
+            {
+              "expr": "kube_pod_info{namespace=\"atdr\"}",
+              "format": "table",
+              "instant": true
+            }
+          ],
+          "datasource": {"type": "prometheus", "uid": "prometheus"}
+        }
+      ]
+    }
