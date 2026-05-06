@@ -734,7 +734,85 @@ def handler(event, context):
 ```
 
 ---
-## 6. Agent 간 통신 스키마
+
+## 6. Forensic Synthesis Agent
+
+### 역할
+
+Remediation Agent가 끝난 후 호출되어, 수집된 모든 증거(탐지 이벤트, Summary/Triage/Solution 출력, Remediation `execution_log`, S3 evidence URI 목록)를 읽고 분석 등급의 forensic 리포트를 생성한다. 이 에이전트는 MCP 도구를 호출하지 않으며, 새 K8s/AWS 리소스도 변경하지 않는다. 순수 분석·합성 단계다.
+
+### 모델: Claude Sonnet 4.5
+
+- 200K 입력 컨텍스트, 64K 출력 토큰.
+- `invoke_model` (`BedrockClient.invoke`) 경로를 사용하고, 응답은 JSON 한 덩어리를 요구한다. tool-use 루프나 Converse API의 스트리밍은 쓰지 않는다. 단일 JSON 결과가 재현성과 파싱 단순성 측면에서 합성 단계에 더 적합하다.
+
+### 입력 스키마
+
+```json
+{
+  "summary": {"body": {...}},
+  "triage": {"body": {...}},
+  "solution": {"body": {...}},
+  "remediation": {"body": {"execution_log": [...], "actions_taken": 6}}
+}
+```
+
+`incident_id`는 `summary.body.incident_id`에서 추출하고, S3 evidence URI는 `execution_log` 안의 tool 결과에서 자동 추출한다.
+
+### 출력 스키마 (JSON)
+
+```json
+{
+  "executive_summary": "...",
+  "timeline": [{"timestamp": "ISO-8601", "event": "...", "source": "...", "evidence_ref": "...", "confidence": "high|medium|low"}],
+  "iocs": [{"type": "...", "value": "...", "source": "...", "confidence": "..."}],
+  "ttps": [{"framework": "MITRE ATT&CK", "technique_id": "Txxxx", "name": "...", "evidence_refs": ["..."]}],
+  "blast_radius": {"affected_namespaces": [...], "affected_pods": [...], "lateral_movement_observed": false, "privilege_escalation_observed": false},
+  "root_cause_hypothesis": "...",
+  "remediation_assessment": {"actions_attempted": [...], "actions_succeeded": [...], "actions_failed": [...], "residual_risk": "...", "residual_risk_reason": "..."},
+  "hardening_recommendations": [{"priority": 1, "recommendation": "...", "rationale": "..."}],
+  "open_questions": ["..."],
+  "confidence_overall": "high|medium|low"
+}
+```
+
+### Evidence Citation
+
+에이전트는 모든 주장에 대해 다음 중 하나의 출처를 반드시 명시한다.
+
+- `execution_log[<index>].<tool>`
+- `evidence_uri:s3://...`
+- `summary.<field>` / `triage.<field>` / `solution.<field>`
+
+출처 없이 추측하지 않는다. 입력에 없는 정보는 만들어 내지 않는다. 파싱 실패나 Bedrock 호출 실패가 발생하면 fallback synthesis를 생성하고 원인을 `parse_error`에 기록한다 — 인시던트 파이프라인은 계속 진행한다.
+
+### S3 저장 구조
+
+```
+s3://${FORENSICS_BUCKET}/incidents/{incident_id}/ai/{timestamp}/
+├── synthesis-report.md
+├── synthesis.json
+├── timeline.json
+├── iocs.json
+└── ttps.json
+```
+
+### DynamoDB 기록
+
+`atdr-incidents` 테이블에 다음 필드가 갱신된다:
+
+- `forensic_synthesis_status`: `completed` 또는 `parse_error`
+- `forensic_synthesis_uris`: 각 아티팩트 S3 URI 맵
+- `forensic_synthesis_summary`: `executive_summary` 앞 500자
+- `forensic_synthesis_error`: parse/invoke 실패 사유
+
+### Step Functions 연결
+
+`RemediationAgent` 상태 이후 `ForensicSynthesisAgent` 상태가 실행된다. Remediation이 예외를 던지더라도 Catch를 통해 동일한 `ForensicSynthesisAgent`로 이동한다. 이는 대응 실패 사고에서도 분석 리포트를 만드는 것을 목표로 한다.
+
+---
+
+## 7. Agent 간 통신 스키마
 
 ### 전체 메시지 흐름
 
@@ -900,7 +978,7 @@ def safe_agent_handler(handler_fn):
 
 ---
 
-## 7. Bedrock 모델 설정
+## 8. Bedrock 모델 설정
 
 ### Claude Haiku 4.5 (Summary Agent, Triage Agent)
 
@@ -952,7 +1030,7 @@ Sonnet 4.6 사용 기준:
 
 ---
 
-## 8. Knowledge Base 설계
+## 9. Knowledge Base 설계
 
 ### OpenSearch Serverless 인덱스 구조
 

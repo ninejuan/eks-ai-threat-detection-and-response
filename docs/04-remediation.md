@@ -64,14 +64,53 @@ MCP 서버는 EKS 클러스터 내부에서 실행된다. AWS 권한이 필요�
 |----------|------|----------|
 | `delete_pod` | 파드 삭제 (재시작 트리거) | `pods:delete` |
 | `label_pod` | 파드 레이블 추가/수정 (Tetragon 격리용) | `pods:patch` |
-| `checkpoint_pod` | Pod 스냅샷/로그를 S3 포렌식 버킷에 저장 | `pods:get`, `pods/log:get`, `s3:PutObject` |
+| `checkpoint_pod` | Pod 스냅샷/로그를 S3 포렌식 버킷에 저장 + 매니페스트 기록 | `pods:get`, `pods/log:get`, `s3:PutObject` |
 | `apply_cilium_network_policy` | CiliumNetworkPolicy 생성 또는 수정 | `ciliumnetworkpolicies:create,update` |
 | `patch_deployment` | Deployment 스펙 수정 (replicas 등) | `deployments:patch` |
 | `cordon_node` | 노드 스케줄링 비활성화 | `nodes:patch` |
 | `drain_node` | 노드 드레인 | `nodes:patch`, `pods:evict` |
-| `capture_hubble_flows` | CiliumEndpoint/Hubble 증거 스냅샷을 S3에 저장 | `ciliumendpoints:list`, `s3:PutObject` |
+| `capture_hubble_flows` | Hubble Relay gRPC로 실제 네트워크 flow + CiliumEndpoints 스냅샷을 S3에 저장 | `ciliumendpoints:list`, `s3:PutObject`, Hubble Relay 접근 |
+| `collect_tetragon_timeline` | 최근 30분의 Tetragon 프로세스/파일/네트워크 이벤트 타임라인을 DynamoDB에서 조회 | `dynamodb:Query`(`atdr-tetragon-events`) |
+| `collect_audit_events` | EKS audit log 대상 CloudWatch Logs Insights 쿼리로 pod 관련 API 이벤트 추출 | `logs:StartQuery,GetQueryResults,StopQuery` |
+| `collect_live_pod_forensics` | Ephemeral container 주입 후 서버 소유 프로파일(`process_snapshot`/`network_snapshot`/`filesystem_triage`/`env_redacted`) 실행 | `pods/ephemeralcontainers:get,patch,update`, `pods/log:get` |
+| `checkpoint_container_experimental` | kubelet `/checkpoint` 엔드포인트로 CRIU 기반 컨테이너 체크포인트 시도 (미지원 노드는 `unsupported` + `fallback_recommendation=collect_live_pod_forensics`) | `nodes:get`, `nodes/checkpoint:create`, in-cluster ServiceAccount 토큰 |
 
 자동 대응 문서의 실행 예시는 MCP 호출을 기준으로 한다. `kubectl` 명령은 운영자 수동 검증 또는 break-glass 상황에만 사용한다.
+
+### 증거-인지형 실행 가드 (Evidence-aware Remediation Guard)
+
+Remediation Agent는 `checkpoint_pod`가 현재 인시던트의 `execution_log`에서 `status=success`로 관찰될 때까지 다음 destructive tool 호출을 server-side(`handler.py`)에서 `status=blocked`로 차단한다.
+
+- `delete_pod`
+- `apply_cilium_network_policy`
+- `cordon_node`
+- `drain_node`
+- `patch_deployment` with `replicas=0`
+
+LLM이 SYSTEM_PROMPT에 명시된 순서를 재배치하더라도 실제 destructive 호출은 `_forensic_precondition_met()` 통과 후에만 실행된다. 이 가드는 AGENTS.md의 "forensic capture must complete before any destructive or network-isolating step" 불변조건을 구현한다.
+
+### 인시던트 증거 번들 경로
+
+모든 증거는 `s3://${FORENSICS_BUCKET}/incidents/{incident_id}/` 하위에 저장된다.
+
+```
+incidents/{incident_id}/
+├── checkpoints/{pod}/{ts}/evidence.json
+├── network-evidence/{pod}/{ts}/evidence.json
+├── tetragon-timeline/{pod_uid}/{ts}/evidence.json
+├── audit-events/{pod}/{ts}/evidence.json
+├── live-forensics/{profile}/{pod}/{ts}/evidence.json
+├── container-checkpoint-attempt/{pod}/{ts}/evidence.json
+├── manifest/{ts}.json                    # 각 evidence 업로드의 SHA-256 매니페스트 엔트리
+└── ai/{ts}/
+    ├── synthesis-report.md
+    ├── synthesis.json
+    ├── timeline.json
+    ├── iocs.json
+    └── ttps.json
+```
+
+`incident_id`는 LLM 스키마에 노출되지 않는다. Lambda `tools.execute_tool`이 handler에서 추출한 incident_id를 `INCIDENT_AWARE_TOOLS` 호출의 `tool_input`에 서버-측으로 주입한다.
 
 ---
 

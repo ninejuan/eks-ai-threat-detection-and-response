@@ -212,6 +212,15 @@ Falco (eBPF) ──► Falcosidekick ──► SNS ──► SQS ─────
 │  - NetworkPolicy 생성, 파드 격리, 네임스페이스 잠금  │
 │  - 실행 결과 검증 및 보고                            │
 └─────────────────────────────────────────────────────┘
+    │
+    ▼
+┌─────────────────────────────────────────────────────┐
+│  Forensic Synthesis Agent  (Claude Sonnet 4.5)      │
+│  - 전체 증거(evidence bundle, execution_log) 분석   │
+│  - 타임라인, IOC, MITRE TTP 매핑, 근본원인 가설     │
+│  - Hardening 권고 + 감사 등급 리포트 생성            │
+│  - synthesis.json / synthesis-report.md → S3        │
+└─────────────────────────────────────────────────────┘
 ```
 
 ### 4.6 Slack Bot 인터페이스

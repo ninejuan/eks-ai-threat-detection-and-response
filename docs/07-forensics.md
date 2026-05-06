@@ -102,6 +102,17 @@ incidents/{incident_id}/ai/
 
 ## 2. 불변 로그 저장 (S3 Object Lock)
 
+### Hubble Relay TLS 운영
+
+`capture_hubble_flows`는 `hubble-relay.kube-system.svc.cluster.local:4245`로 gRPC 호출한다. Cilium Helm 기본값은 `hubble.tls.auto.enabled=true`이며 relay가 mTLS를 요구한다. ATDR은 기본적으로 MCP 서버 env `HUBBLE_TLS_ENABLED=false`로 운영한다. 운영 선택지:
+
+| 모드 | 설정 | 트레이드오프 |
+|------|------|-------------|
+| In-cluster 평문 (기본) | Cilium Helm에서 `hubble.tls.enabled=false` 또는 MCP `HUBBLE_TLS_ENABLED=false` | VPC CiliumNetworkPolicy로 격리. gRPC cert 관리 불필요. relay가 TLS 요구하면 `capture_hubble_flows`는 evidence에 `hubble_error`로 실패 기록 후 정상 진행 |
+| mTLS (프로덕션 권장) | `HUBBLE_TLS_ENABLED=true` + ExternalSecret로 `hubble-relay-client-certs` 마운트, env `HUBBLE_CA_CERT_PATH`/`HUBBLE_CLIENT_CERT_PATH`/`HUBBLE_CLIENT_KEY_PATH` 설정 | cert rotation 필요. in-cluster 감시자 간 상호 인증 |
+
+현재 배포 기본값은 Cilium chart 기본(auto TLS) + MCP 평문 — 이 경우 `capture_hubble_flows`는 Hubble에서 flow를 못 가져오지만 pod 메타/CiliumEndpoints 증거는 수집되며 이는 수용 가능한 degradation이다. 실제 flow까지 수집하려면 위 표의 한 모드로 정렬해야 한다.
+
 ### 설계 원칙
 
 모든 보안 이벤트 원본은 S3 Object Lock이 활성화된 버킷에 저장한다. GOVERNANCE 모드를 사용해 일반 사용자는 삭제할 수 없고, 특별 권한을 가진 관리자만 잠금을 해제할 수 있다.
