@@ -55,8 +55,61 @@ def test_execute_tool_calls_real_tools():
             "label_pod", {"pod_name": "pod-a", "namespace": "default", "labels": {"x": "y"}}, []
         )
 
-    mock_exec.assert_called_once_with("label_pod", {"pod_name": "pod-a", "namespace": "default", "labels": {"x": "y"}})
+    mock_exec.assert_called_once_with(
+        "label_pod", {"pod_name": "pod-a", "namespace": "default", "labels": {"x": "y"}}, incident_id=None
+    )
     assert result["status"] == "success"
+
+
+def test_execute_tool_propagates_incident_id():
+    with patch(
+        "app.agents.remediation.tools.execute_tool", return_value={"status": "success", "action": "checkpoint_pod"}
+    ) as mock_exec:
+        handler._execute_tool(
+            "checkpoint_pod",
+            {"pod_name": "pod-a", "namespace": "default"},
+            [],
+            incident_id="inc-001",
+        )
+
+    mock_exec.assert_called_once_with(
+        "checkpoint_pod", {"pod_name": "pod-a", "namespace": "default"}, incident_id="inc-001"
+    )
+
+
+def test_lambda_handler_passes_incident_id_from_summary(monkeypatch, context):
+    client = MagicMock()
+    client.invoke_with_tools.side_effect = [
+        {
+            "stop_reason": "tool_use",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "name": "checkpoint_pod",
+                    "input": {"pod_name": "pod-a", "namespace": "default"},
+                    "id": "tool-1",
+                }
+            ],
+        },
+        {"stop_reason": "end_turn", "content": [{"type": "text", "text": "done"}]},
+    ]
+    monkeypatch.setattr(handler, "BedrockClient", lambda model_id, region: client)
+    monkeypatch.setattr(handler, "_update_incident_status", lambda *args, **kwargs: None)
+
+    with patch(
+        "app.agents.remediation.tools.execute_tool",
+        return_value={"status": "success", "action": "checkpoint_pod"},
+    ) as mock_exec:
+        handler.lambda_handler(
+            {"summary": {"body": {"incident_id": "inc-2026-test"}}},
+            context,
+        )
+
+    mock_exec.assert_called_once_with(
+        "checkpoint_pod",
+        {"pod_name": "pod-a", "namespace": "default"},
+        incident_id="inc-2026-test",
+    )
 
 
 def test_lambda_handler_stops_after_max_iterations(monkeypatch, context):
@@ -151,7 +204,7 @@ def test_destructive_tool_allowed_after_successful_checkpoint(monkeypatch, conte
         "delete_pod": {"status": "success", "action": "delete_pod"},
     }
 
-    def fake_execute(tool_name, _tool_input):
+    def fake_execute(tool_name, _tool_input, *, incident_id=None):
         return tool_responses[tool_name]
 
     with patch("app.agents.remediation.tools.execute_tool", side_effect=fake_execute):
@@ -197,13 +250,13 @@ def test_destructive_tool_blocked_when_checkpoint_failed(monkeypatch, context):
         "checkpoint_pod": {"status": "failed", "action": "checkpoint_pod", "error": "NoSuchBucket"},
     }
 
-    def fake_execute(tool_name, _tool_input):
+    def fake_execute(tool_name, _tool_input, *, incident_id=None):
         return tool_responses[tool_name]
 
     with patch("app.agents.remediation.tools.execute_tool", side_effect=fake_execute) as mock_exec:
         result = handler.lambda_handler({}, context)
 
-    mock_exec.assert_called_once_with("checkpoint_pod", {"pod_name": "pod-a", "namespace": "default"})
+    mock_exec.assert_called_once_with("checkpoint_pod", {"pod_name": "pod-a", "namespace": "default"}, incident_id=None)
     drain_entry = next(e for e in result["execution_log"] if e.get("tool") == "drain_node")
     assert drain_entry["result"]["status"] == "blocked"
 

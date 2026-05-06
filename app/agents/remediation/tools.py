@@ -64,13 +64,20 @@ def _warmup(server_url: str) -> None:
         logger.warning("MCP warmup failed (non-fatal): %s", error)
 
 
-def execute_tool(tool_name: str, tool_input: dict) -> dict:
+INCIDENT_AWARE_TOOLS = frozenset({"checkpoint_pod", "capture_hubble_flows"})
+
+
+def execute_tool(tool_name: str, tool_input: dict, *, incident_id: str | None = None) -> dict:
     if tool_name not in ALLOWED_TOOLS:
         return {"status": "failed", "error": f"Unknown tool: {tool_name}"}
 
-    logger.info("Executing MCP tool: %s with input: %s", tool_name, json.dumps(tool_input))
+    effective_input = dict(tool_input)
+    if incident_id and tool_name in INCIDENT_AWARE_TOOLS:
+        effective_input["incident_id"] = incident_id
+
+    logger.info("Executing MCP tool: %s with input: %s", tool_name, json.dumps(effective_input))
     try:
-        result = _client().call_tool(tool_name, tool_input)
+        result = _client().call_tool(tool_name, effective_input)
     except McpClientError as error:
         logger.error("MCP tool %s failed: %s", tool_name, error)
         return {"status": "failed", "action": tool_name, "error": str(error)}

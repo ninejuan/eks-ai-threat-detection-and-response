@@ -30,8 +30,22 @@ def test_forensics_destination_uses_server_owned_bucket(server_module):
     bucket, key = server_module._forensics_destination("checkpoints", "pod-a")
 
     assert bucket == "atdr-forensics-test"
-    assert key.startswith("checkpoints/pod-a/")
+    assert key.startswith("incidents/adhoc/checkpoints/pod-a/")
     assert key.endswith("/evidence.json")
+
+
+def test_forensics_destination_uses_sanitized_incident_id(server_module):
+    bucket, key = server_module._forensics_destination("checkpoints", "pod-a", "inc-2026-05-07-falco")
+
+    assert bucket == "atdr-forensics-test"
+    assert key.startswith("incidents/inc-2026-05-07-falco/checkpoints/pod-a/")
+
+
+def test_forensics_destination_rejects_unsafe_incident_id(server_module):
+    _, key = server_module._forensics_destination("checkpoints", "pod-a", "../../evil")
+    assert key.startswith("incidents/adhoc/")
+    _, key2 = server_module._forensics_destination("checkpoints", "pod-a", "")
+    assert key2.startswith("incidents/adhoc/")
 
 
 def test_sanitize_label_value_replaces_invalid_chars(server_module):
@@ -76,7 +90,7 @@ def test_checkpoint_pod_writes_forensics_evidence(server_module, monkeypatch):
         spec=SimpleNamespace(containers=[SimpleNamespace(name="app")], node_name="node-a"),
         metadata=SimpleNamespace(uid="uid-123"),
     )
-    captured = {}
+    put_calls = []
 
     class CoreApi:
         def read_namespaced_pod(self, name, namespace):
@@ -89,24 +103,38 @@ def test_checkpoint_pod_writes_forensics_evidence(server_module, monkeypatch):
 
     class S3Client:
         def put_object(self, **kwargs):
-            captured.update(kwargs)
+            put_calls.append(kwargs)
 
     monkeypatch.setattr(server_module, "CORE", CoreApi())
     monkeypatch.setattr(server_module, "S3", S3Client())
     monkeypatch.setattr(server_module, "_sanitize_k8s_object", lambda value: {"uid": value.metadata.uid})
 
-    result = server_module.checkpoint_pod("pod-a", "default")
+    result = server_module.checkpoint_pod("pod-a", "default", incident_id="inc-2026-abc")
 
     assert result["status"] == "success"
     assert result["pod"] == "pod-a"
-    assert result["evidence_uri"].startswith("s3://atdr-forensics-test/checkpoints/pod-a/")
-    assert captured["Bucket"] == "atdr-forensics-test"
-    assert captured["Key"].startswith("checkpoints/pod-a/")
+    assert result["evidence_uri"].startswith("s3://atdr-forensics-test/incidents/inc-2026-abc/checkpoints/pod-a/")
+    assert "evidence_sha256" in result
+    assert len(result["evidence_sha256"]) == 64
 
-    payload = json.loads(captured["Body"].decode("utf-8"))
+    evidence_call = next(call for call in put_calls if "/evidence.json" in call["Key"])
+    manifest_call = next(call for call in put_calls if "/manifest/" in call["Key"])
+    assert evidence_call["Bucket"] == "atdr-forensics-test"
+    assert evidence_call["Metadata"]["sha256"] == result["evidence_sha256"]
+    assert manifest_call["Bucket"] == "atdr-forensics-test"
+    assert manifest_call["Metadata"]["incident-id"] == "inc-2026-abc"
+
+    payload = json.loads(evidence_call["Body"].decode("utf-8"))
     assert payload["kind"] == "pod_forensics_checkpoint"
+    assert payload["incident_id"] == "inc-2026-abc"
     assert payload["pod"] == {"uid": "uid-123"}
     assert payload["logs"] == {"app": "logs:app"}
+
+    manifest_entry = json.loads(manifest_call["Body"].decode("utf-8"))
+    assert manifest_entry["incident_id"] == "inc-2026-abc"
+    assert manifest_entry["evidence"][0]["kind"] == "pod_forensics_checkpoint"
+    assert manifest_entry["evidence"][0]["sha256"] == result["evidence_sha256"]
+    assert manifest_entry["evidence"][0]["uri"] == result["evidence_uri"]
 
 
 def test_capture_hubble_flows_writes_forensics_evidence(server_module, monkeypatch):
@@ -115,7 +143,7 @@ def test_capture_hubble_flows_writes_forensics_evidence(server_module, monkeypat
         status=SimpleNamespace(pod_ip="10.0.0.5", host_ip="10.0.0.1"),
         metadata=SimpleNamespace(labels={"run": "attacker"}),
     )
-    captured = {}
+    put_calls = []
 
     class CoreApi:
         def read_namespaced_pod(self, name, namespace):
@@ -130,22 +158,48 @@ def test_capture_hubble_flows_writes_forensics_evidence(server_module, monkeypat
 
     class S3Client:
         def put_object(self, **kwargs):
-            captured.update(kwargs)
+            put_calls.append(kwargs)
 
     monkeypatch.setattr(server_module, "CORE", CoreApi())
     monkeypatch.setattr(server_module, "CUSTOM", CustomApi())
     monkeypatch.setattr(server_module, "S3", S3Client())
 
-    result = server_module.capture_hubble_flows("pod-a", "default")
+    result = server_module.capture_hubble_flows("pod-a", "default", incident_id="inc-2026-xyz")
 
     assert result["status"] == "success"
     assert result["endpoints_found"] == 1
-    assert result["evidence_uri"].startswith("s3://atdr-forensics-test/network-evidence/pod-a/")
-    assert captured["Bucket"] == "atdr-forensics-test"
-    assert captured["Key"].startswith("network-evidence/pod-a/")
+    assert result["evidence_uri"].startswith("s3://atdr-forensics-test/incidents/inc-2026-xyz/network-evidence/pod-a/")
+    assert "evidence_sha256" in result
 
-    payload = json.loads(captured["Body"].decode("utf-8"))
+    evidence_call = next(call for call in put_calls if "/evidence.json" in call["Key"])
+    manifest_call = next(call for call in put_calls if "/manifest/" in call["Key"])
+
+    payload = json.loads(evidence_call["Body"].decode("utf-8"))
     assert payload["kind"] == "network_flow_snapshot"
+    assert payload["incident_id"] == "inc-2026-xyz"
     assert payload["pod_name"] == "pod-a"
     assert payload["pod_ip"] == "10.0.0.5"
     assert payload["cilium_endpoints"]["items"][0]["metadata"]["name"] == "endpoint-a"
+
+    manifest_entry = json.loads(manifest_call["Body"].decode("utf-8"))
+    assert manifest_entry["evidence"][0]["kind"] == "network_flow_snapshot"
+    assert manifest_entry["evidence"][0]["sha256"] == result["evidence_sha256"]
+
+
+def test_put_forensics_object_returns_sha256(server_module, monkeypatch):
+    put_calls = []
+
+    class S3Client:
+        def put_object(self, **kwargs):
+            put_calls.append(kwargs)
+
+    monkeypatch.setattr(server_module, "S3", S3Client())
+
+    payload = b"hello forensic world"
+    uri, sha256, size = server_module._put_forensics_object(
+        "atdr-forensics-test", "some/key.bin", payload, "application/octet-stream"
+    )
+    assert uri == "s3://atdr-forensics-test/some/key.bin"
+    assert size == len(payload)
+    assert sha256 == "9836e30efa1910f25dffa2908852fd823db8a2d557c2320f76ea66d3909b14ce"
+    assert put_calls[0]["Metadata"] == {"sha256": sha256}

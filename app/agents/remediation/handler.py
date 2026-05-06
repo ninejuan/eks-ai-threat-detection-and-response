@@ -192,6 +192,7 @@ def lambda_handler(event: dict, context) -> dict:
     summary = event.get("summary", {}).get("body", {})
     triage = event.get("triage", {}).get("body", {})
     solution = event.get("solution", {}).get("body", {})
+    incident_id = summary.get("incident_id") if isinstance(summary, dict) else None
 
     context_json = json.dumps(
         {"summary": summary, "triage": triage, "solution": solution},
@@ -236,7 +237,7 @@ def lambda_handler(event: dict, context) -> dict:
                 tool_input = block["input"]
                 tool_id = block["id"]
 
-                result = _execute_tool(tool_name, tool_input, execution_log)
+                result = _execute_tool(tool_name, tool_input, execution_log, incident_id=incident_id)
                 execution_log.append({"tool": tool_name, "input": tool_input, "result": result})
 
                 tool_results.append(
@@ -345,7 +346,7 @@ def _notify_remediation_complete(config: Config, incident_id: str, execution_log
         logger.warning("Failed to send remediation notification: %s", error)
 
 
-def _execute_tool(tool_name: str, tool_input: dict, execution_log: list) -> dict:
+def _execute_tool(tool_name: str, tool_input: dict, execution_log: list, *, incident_id: str | None = None) -> dict:
     from app.agents.remediation.tools import execute_tool
 
     if _is_destructive(tool_name, tool_input):
@@ -365,4 +366,4 @@ def _execute_tool(tool_name: str, tool_input: dict, execution_log: list) -> dict
                 "required_forensic_tools": list(REQUIRED_FORENSIC_TOOLS),
             }
 
-    return execute_tool(tool_name, tool_input)
+    return execute_tool(tool_name, tool_input, incident_id=incident_id)

@@ -1,3 +1,4 @@
+import hashlib
 import json
 import logging
 import os
@@ -36,8 +37,19 @@ def _failure(action: str, error: str) -> dict:
     return {"status": "failed", "action": action, "error": error}
 
 
-def _forensics_destination(prefix: str, resource_name: str) -> tuple[str, str]:
-    key_prefix = f"{prefix}/{resource_name}/{datetime.now(tz=UTC).strftime('%Y%m%d-%H%M%S')}"
+_INCIDENT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
+
+
+def _sanitize_incident_id(incident_id: str | None) -> str:
+    if incident_id and _INCIDENT_ID_RE.match(incident_id):
+        return incident_id
+    return "adhoc"
+
+
+def _forensics_destination(prefix: str, resource_name: str, incident_id: str | None = None) -> tuple[str, str]:
+    timestamp = datetime.now(tz=UTC).strftime("%Y%m%d-%H%M%S")
+    bundle_id = _sanitize_incident_id(incident_id)
+    key_prefix = f"incidents/{bundle_id}/{prefix}/{resource_name}/{timestamp}"
     return FORENSICS_BUCKET, str(PurePosixPath(key_prefix) / "evidence.json")
 
 
@@ -50,14 +62,55 @@ def _sanitize_label_value(value: object) -> str:
     return cleaned or "unknown"
 
 
-def _put_forensics_json(bucket: str, key: str, payload: dict) -> str:
+def _put_forensics_object(bucket: str, key: str, body: bytes, content_type: str) -> tuple[str, str, int]:
+    sha256 = hashlib.sha256(body).hexdigest()
     S3.put_object(
         Bucket=bucket,
         Key=key,
-        Body=json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8"),
-        ContentType="application/json",
+        Body=body,
+        ContentType=content_type,
+        Metadata={"sha256": sha256},
     )
-    return f"s3://{bucket}/{key}"
+    return f"s3://{bucket}/{key}", sha256, len(body)
+
+
+def _put_forensics_json(
+    bucket: str, key: str, payload: dict, incident_id: str | None = None, kind: str | None = None
+) -> dict:
+    body = json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")
+    uri, sha256, size = _put_forensics_object(bucket, key, body, "application/json")
+    _append_evidence_manifest(
+        bucket=bucket,
+        incident_id=_sanitize_incident_id(incident_id),
+        item={
+            "uri": uri,
+            "key": key,
+            "kind": kind or payload.get("kind", "unknown"),
+            "sha256": sha256,
+            "size_bytes": size,
+            "captured_at": datetime.now(tz=UTC).isoformat(),
+        },
+    )
+    return {"uri": uri, "sha256": sha256, "size_bytes": size}
+
+
+def _append_evidence_manifest(bucket: str, incident_id: str, item: dict) -> None:
+    timestamp = datetime.now(tz=UTC).strftime("%Y%m%dT%H%M%S%fZ")
+    manifest_key = f"incidents/{incident_id}/manifest/{timestamp}.json"
+    entry = {
+        "incident_id": incident_id,
+        "forensics_bucket": bucket,
+        "recorded_at": datetime.now(tz=UTC).isoformat(),
+        "evidence": [item],
+    }
+    body = json.dumps(entry, ensure_ascii=False).encode("utf-8")
+    S3.put_object(
+        Bucket=bucket,
+        Key=manifest_key,
+        Body=body,
+        ContentType="application/json",
+        Metadata={"incident-id": incident_id, "kind": "evidence-manifest-entry"},
+    )
 
 
 def _sanitize_k8s_object(value: object) -> object:
@@ -168,7 +221,9 @@ def drain_node(node_name: str, ignore_daemonsets: bool = True) -> dict:
     return _success("drain_node", node=node_name, evicted_pods=len(evicted))
 
 
-def checkpoint_pod(pod_name: str, namespace: str, container_name: str | None = None) -> dict:
+def checkpoint_pod(
+    pod_name: str, namespace: str, container_name: str | None = None, incident_id: str | None = None
+) -> dict:
     pod = CORE.read_namespaced_pod(name=pod_name, namespace=namespace)
     selected_container = container_name or pod.spec.containers[0].name
     logs = {}
@@ -184,17 +239,20 @@ def checkpoint_pod(pod_name: str, namespace: str, container_name: str | None = N
         except ApiException as error:
             logs[container.name] = f"log capture failed: {error.reason}"
 
-    bucket, key = _forensics_destination("checkpoints", pod_name)
-    evidence_uri = _put_forensics_json(
+    bucket, key = _forensics_destination("checkpoints", pod_name, incident_id)
+    evidence = _put_forensics_json(
         bucket,
         key,
         {
             "captured_at": datetime.now(tz=UTC).isoformat(),
             "kind": "pod_forensics_checkpoint",
+            "incident_id": _sanitize_incident_id(incident_id),
             "pod": _sanitize_k8s_object(pod),
             "selected_container": selected_container,
             "logs": logs,
         },
+        incident_id=incident_id,
+        kind="pod_forensics_checkpoint",
     )
     return _success(
         "checkpoint_pod",
@@ -203,11 +261,12 @@ def checkpoint_pod(pod_name: str, namespace: str, container_name: str | None = N
         container=selected_container,
         node=pod.spec.node_name,
         uid=pod.metadata.uid,
-        evidence_uri=evidence_uri,
+        evidence_uri=evidence["uri"],
+        evidence_sha256=evidence["sha256"],
     )
 
 
-def capture_hubble_flows(pod_name: str, namespace: str) -> dict:
+def capture_hubble_flows(pod_name: str, namespace: str, incident_id: str | None = None) -> dict:
     pod = CORE.read_namespaced_pod(name=pod_name, namespace=namespace)
     pod_ip = pod.status.pod_ip or "unknown"
     host_ip = pod.status.host_ip or "unknown"
@@ -225,13 +284,14 @@ def capture_hubble_flows(pod_name: str, namespace: str) -> dict:
     except ApiException:
         endpoints = {"items": [], "note": "CiliumEndpoints not available (ENI mode)"}
 
-    bucket, key = _forensics_destination("network-evidence", pod_name)
-    evidence_uri = _put_forensics_json(
+    bucket, key = _forensics_destination("network-evidence", pod_name, incident_id)
+    evidence = _put_forensics_json(
         bucket,
         key,
         {
             "captured_at": datetime.now(tz=UTC).isoformat(),
             "kind": "network_flow_snapshot",
+            "incident_id": _sanitize_incident_id(incident_id),
             "pod_name": pod_name,
             "namespace": namespace,
             "pod_ip": pod_ip,
@@ -240,6 +300,8 @@ def capture_hubble_flows(pod_name: str, namespace: str) -> dict:
             "cilium_endpoints": endpoints,
             "pod_labels": pod.metadata.labels or {},
         },
+        incident_id=incident_id,
+        kind="network_flow_snapshot",
     )
     return _success(
         "capture_hubble_flows",
@@ -248,7 +310,8 @@ def capture_hubble_flows(pod_name: str, namespace: str) -> dict:
         pod_ip=pod_ip,
         node_name=node_name,
         endpoints_found=len(endpoints.get("items", [])),
-        evidence_uri=evidence_uri,
+        evidence_uri=evidence["uri"],
+        evidence_sha256=evidence["sha256"],
     )
 
 
