@@ -3,22 +3,22 @@ locals {
     summary = {
       memory_size = 512
       timeout     = 30
-      model_id    = "anthropic.claude-haiku-4.5-20250404-v1:0"
+      model_id    = var.bedrock_fast_model_id
     }
     triage = {
       memory_size = 512
       timeout     = 30
-      model_id    = "anthropic.claude-haiku-4.5-20250404-v1:0"
+      model_id    = var.bedrock_fast_model_id
     }
     solution = {
       memory_size = 1024
       timeout     = 120
-      model_id    = "anthropic.claude-sonnet-4-20250514-v1:0"
+      model_id    = var.bedrock_smart_model_id
     }
     remediation = {
       memory_size = 1024
       timeout     = 180
-      model_id    = "anthropic.claude-sonnet-4-20250514-v1:0"
+      model_id    = var.bedrock_smart_model_id
     }
   }
 }

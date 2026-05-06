@@ -1,10 +1,19 @@
 data "aws_caller_identity" "current" {}
 
+data "aws_bedrock_foundation_models" "claude" {
+  by_provider = "Anthropic"
+}
+
 locals {
   account_id      = data.aws_caller_identity.current.account_id
   admin_principal = var.admin_principal_arn != "" ? var.admin_principal_arn : data.aws_caller_identity.current.arn
   admin_user_name = startswith(local.admin_principal, "arn:aws:iam::${local.account_id}:user/") ? trimprefix(local.admin_principal, "arn:aws:iam::${local.account_id}:user/") : ""
   admin_role_name = startswith(local.admin_principal, "arn:aws:iam::${local.account_id}:role/") ? trimprefix(local.admin_principal, "arn:aws:iam::${local.account_id}:role/") : ""
+
+  # Inference profile IDs for cross-region invocation
+  bedrock_fast_model_id  = "global.anthropic.claude-haiku-4-5-20251001-v1:0"
+  bedrock_smart_model_id = "apac.anthropic.claude-sonnet-4-20250514-v1:0"
+
   common_tags = {
     Environment = var.environment
     Project     = var.project_name
@@ -92,6 +101,8 @@ module "lambda" {
 
   project                  = var.project_name
   region                   = var.region
+  bedrock_fast_model_id    = local.bedrock_fast_model_id
+  bedrock_smart_model_id   = local.bedrock_smart_model_id
   vpc_id                   = module.vpc.vpc_id
   private_subnet_ids       = module.vpc.private_subnet_ids
   execution_role_arn       = module.iam.lambda_agent_role_arn
@@ -100,6 +111,7 @@ module "lambda" {
   opensearch_endpoint      = module.opensearch.collection_endpoint
   eks_cluster_name         = module.eks.cluster_name
   dynamodb_table_name      = aws_dynamodb_table.incidents.name
+  knowledge_base_id        = var.knowledge_base_id
   mcp_auth_secret_id       = aws_secretsmanager_secret.mcp_auth_token.name
   mcp_server_url_secret_id = aws_secretsmanager_secret.mcp_server_url.name
 }

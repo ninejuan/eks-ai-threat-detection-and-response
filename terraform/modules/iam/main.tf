@@ -131,7 +131,19 @@ resource "aws_iam_role_policy" "lambda_agent" {
           "bedrock:InvokeModel",
           "bedrock:InvokeModelWithResponseStream",
         ]
-        Resource = "arn:aws:bedrock:${var.region}::foundation-model/*"
+        Resource = [
+          "arn:aws:bedrock:*::foundation-model/*",
+          "arn:aws:bedrock:*:${local.account_id}:inference-profile/*",
+        ]
+      },
+      {
+        Sid    = "MarketplaceModelAccess"
+        Effect = "Allow"
+        Action = [
+          "aws-marketplace:ViewSubscriptions",
+          "aws-marketplace:Subscribe",
+        ]
+        Resource = "*"
       },
       {
         Sid    = "BedrockKnowledgeBaseRetrieve"

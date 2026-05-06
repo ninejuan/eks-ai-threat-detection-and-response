@@ -27,3 +27,9 @@ variable "admin_principal_arn" {
   type        = string
   default     = ""
 }
+
+variable "knowledge_base_id" {
+  description = "Bedrock Knowledge Base ID. Set by make create-kb."
+  type        = string
+  default     = ""
+}

@@ -8,6 +8,16 @@ variable "region" {
   type        = string
 }
 
+variable "bedrock_fast_model_id" {
+  description = "Bedrock model ID for fast/cheap agents (summary, triage)"
+  type        = string
+}
+
+variable "bedrock_smart_model_id" {
+  description = "Bedrock model ID for smart/expensive agents (solution, remediation)"
+  type        = string
+}
+
 variable "vpc_id" {
   description = "VPC ID for Lambda security group"
   type        = string

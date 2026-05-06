@@ -259,13 +259,10 @@ create-kb:
 		else \
 			echo "Data Source already exists: $$DS_ID"; \
 		fi && \
-		echo "Updating Lambda KNOWLEDGE_BASE_ID to $$KB_ID..." && \
-		for fn in atdr-summary-agent atdr-triage-agent atdr-solution-agent atdr-remediation-agent; do \
-			aws lambda update-function-configuration \
-				--function-name $$fn \
-				--environment "Variables={$$(aws lambda get-function-configuration --function-name $$fn --region $(REGION) --query 'Environment.Variables' --output json --no-cli-pager | python3 -c 'import json,sys; d=json.load(sys.stdin); d["KNOWLEDGE_BASE_ID"]="'$$KB_ID'"; print(",".join(f"{k}={v}" for k,v in d.items()))')}" \
-				--region $(REGION) --no-cli-pager >/dev/null; \
-		done && \
+		echo "Persisting KB ID to Terraform..." && \
+		grep -q 'knowledge_base_id' $(TF_DIR)/terraform.tfvars 2>/dev/null && \
+			sed -i '' 's/knowledge_base_id.*/knowledge_base_id = "'$$KB_ID'"/' $(TF_DIR)/terraform.tfvars || \
+			echo 'knowledge_base_id = "'$$KB_ID'"' >> $(TF_DIR)/terraform.tfvars && \
 		echo "Knowledge Base ready: $$KB_ID (data source: $$DS_ID)"
 
 kb-sync:
