@@ -23,8 +23,18 @@ variable "falco_pod_role_arn" {
   type        = string
 }
 
+variable "falco_k8saudit_role_arn" {
+  description = "IAM role ARN for Falco k8saudit Pod Identity"
+  type        = string
+}
+
 variable "external_secrets_role_arn" {
   description = "IAM role ARN for External Secrets Operator Pod Identity"
+  type        = string
+}
+
+variable "mcp_server_role_arn" {
+  description = "IAM role ARN for EKS MCP Server Pod Identity"
   type        = string
 }
 
@@ -51,15 +61,5 @@ variable "endpoint_public_access_cidrs" {
 
 variable "ebs_csi_role_arn" {
   description = "IAM role ARN for EBS CSI Driver Pod Identity"
-  type        = string
-}
-
-variable "lambda_role_arn" {
-  description = "IAM role ARN for Lambda agents (EKS Access Entry)"
-  type        = string
-}
-
-variable "lambda_security_group_id" {
-  description = "Security group ID of Lambda agents (for EKS API ingress)"
   type        = string
 }

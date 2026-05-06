@@ -62,7 +62,7 @@ resource "aws_lambda_function" "slack_bot" {
   role          = var.execution_role_arn
   runtime       = "python3.12"
   handler       = "handler.lambda_handler"
-  filename      = "${path.module}/placeholder.zip"
+  filename      = "${path.module}/slack_bot.zip"
   timeout       = 30
   memory_size   = 256
   layers        = var.lambda_layer_arn != "" ? [var.lambda_layer_arn] : []

@@ -18,6 +18,10 @@ output "falco_pod_role_arn" {
   value = aws_iam_role.falco_pod.arn
 }
 
+output "falco_k8saudit_role_arn" {
+  value = aws_iam_role.falco_k8saudit.arn
+}
+
 output "external_secrets_role_arn" {
   value = aws_iam_role.external_secrets.arn
 }
@@ -32,4 +36,8 @@ output "aws_lb_controller_role_arn" {
 
 output "ebs_csi_role_arn" {
   value = aws_iam_role.ebs_csi.arn
+}
+
+output "mcp_server_role_arn" {
+  value = aws_iam_role.mcp_server.arn
 }

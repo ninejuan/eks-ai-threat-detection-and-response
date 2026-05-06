@@ -43,6 +43,16 @@ resource "aws_security_group_rule" "lambda_egress_https" {
   security_group_id = aws_security_group.lambda.id
 }
 
+resource "aws_security_group_rule" "lambda_egress_mcp" {
+  type              = "egress"
+  from_port         = 80
+  to_port           = 80
+  protocol          = "tcp"
+  cidr_blocks       = ["10.0.0.0/16"]
+  description       = "Private outbound to EKS MCP internal load balancer"
+  security_group_id = aws_security_group.lambda.id
+}
+
 resource "aws_lambda_layer_version" "dependencies" {
   layer_name          = "${var.project}-dependencies"
   filename            = "${path.module}/layer.zip"
@@ -60,7 +70,7 @@ resource "aws_lambda_function" "agent" {
   role          = var.execution_role_arn
   runtime       = "python3.12"
   handler       = "handler.lambda_handler"
-  filename      = "${path.module}/placeholder.zip"
+  filename      = "${path.module}/${each.key}.zip"
   timeout       = each.value.timeout
   memory_size   = each.value.memory_size
   layers        = [aws_lambda_layer_version.dependencies.arn]
@@ -72,14 +82,16 @@ resource "aws_lambda_function" "agent" {
 
   environment {
     variables = {
-      AGENT_TYPE          = each.key
-      BEDROCK_MODEL_ID    = each.value.model_id
-      OPENSEARCH_ENDPOINT = var.opensearch_endpoint
-      KNOWLEDGE_BASE_ID   = var.knowledge_base_id
-      EKS_CLUSTER_NAME    = var.eks_cluster_name
-      DYNAMODB_TABLE_NAME = var.dynamodb_table_name
-      PROJECT             = var.project
-      LOG_LEVEL           = "INFO"
+      AGENT_TYPE               = each.key
+      BEDROCK_MODEL_ID         = each.value.model_id
+      OPENSEARCH_ENDPOINT      = var.opensearch_endpoint
+      KNOWLEDGE_BASE_ID        = var.knowledge_base_id
+      EKS_CLUSTER_NAME         = var.eks_cluster_name
+      DYNAMODB_TABLE_NAME      = var.dynamodb_table_name
+      MCP_AUTH_SECRET_ID       = var.mcp_auth_secret_id
+      MCP_SERVER_URL_SECRET_ID = var.mcp_server_url_secret_id
+      PROJECT                  = var.project
+      LOG_LEVEL                = "INFO"
     }
   }
 
@@ -102,7 +114,7 @@ resource "aws_lambda_function" "ingestor" {
   role          = var.execution_role_arn
   runtime       = "python3.12"
   handler       = "handler.lambda_handler"
-  filename      = "${path.module}/placeholder.zip"
+  filename      = "${path.module}/ingestor.zip"
   timeout       = 60
   memory_size   = 256
   layers        = [aws_lambda_layer_version.dependencies.arn]
@@ -135,7 +147,7 @@ resource "aws_lambda_function" "degraded_notifier" {
   role          = var.execution_role_arn
   runtime       = "python3.12"
   handler       = "handler.lambda_handler"
-  filename      = "${path.module}/placeholder.zip"
+  filename      = "${path.module}/degraded_notifier.zip"
   timeout       = 30
   memory_size   = 256
   layers        = [aws_lambda_layer_version.dependencies.arn]
@@ -165,7 +177,7 @@ resource "aws_lambda_function" "approval_notifier" {
   role          = var.execution_role_arn
   runtime       = "python3.12"
   handler       = "handler.lambda_handler"
-  filename      = "${path.module}/placeholder.zip"
+  filename      = "${path.module}/approval_notifier.zip"
   timeout       = 30
   memory_size   = 256
   layers        = [aws_lambda_layer_version.dependencies.arn]

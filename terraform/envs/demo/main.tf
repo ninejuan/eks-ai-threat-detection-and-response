@@ -50,11 +50,11 @@ module "eks" {
   node_role_arn                = module.iam.eks_node_role_arn
   admin_role_arn               = local.admin_principal
   falco_pod_role_arn           = module.iam.falco_pod_role_arn
+  falco_k8saudit_role_arn      = module.iam.falco_k8saudit_role_arn
   external_secrets_role_arn    = module.iam.external_secrets_role_arn
+  mcp_server_role_arn          = module.iam.mcp_server_role_arn
   aws_lb_controller_role_arn   = module.iam.aws_lb_controller_role_arn
   ebs_csi_role_arn             = module.iam.ebs_csi_role_arn
-  lambda_role_arn              = module.iam.lambda_agent_role_arn
-  lambda_security_group_id     = module.lambda.lambda_security_group_id
   vpc_id                       = module.vpc.vpc_id
   private_subnet_ids           = module.vpc.private_subnet_ids
   endpoint_public_access_cidrs = var.endpoint_public_access_cidrs
@@ -86,16 +86,18 @@ module "opensearch" {
 module "lambda" {
   source = "../../modules/lambda"
 
-  project                 = var.project_name
-  region                  = var.region
-  vpc_id                  = module.vpc.vpc_id
-  private_subnet_ids      = module.vpc.private_subnet_ids
-  execution_role_arn      = module.iam.lambda_agent_role_arn
-  step_functions_role_arn = module.iam.step_functions_role_arn
-  sqs_queue_arn           = module.sns_sqs.sqs_queue_arn
-  opensearch_endpoint     = module.opensearch.collection_endpoint
-  eks_cluster_name        = module.eks.cluster_name
-  dynamodb_table_name     = aws_dynamodb_table.incidents.name
+  project                  = var.project_name
+  region                   = var.region
+  vpc_id                   = module.vpc.vpc_id
+  private_subnet_ids       = module.vpc.private_subnet_ids
+  execution_role_arn       = module.iam.lambda_agent_role_arn
+  step_functions_role_arn  = module.iam.step_functions_role_arn
+  sqs_queue_arn            = module.sns_sqs.sqs_queue_arn
+  opensearch_endpoint      = module.opensearch.collection_endpoint
+  eks_cluster_name         = module.eks.cluster_name
+  dynamodb_table_name      = aws_dynamodb_table.incidents.name
+  mcp_auth_secret_id       = aws_secretsmanager_secret.mcp_auth_token.name
+  mcp_server_url_secret_id = aws_secretsmanager_secret.mcp_server_url.name
 }
 
 module "slack" {
@@ -179,5 +181,57 @@ resource "aws_secretsmanager_secret" "mcp_auth_token" {
 
   tags = {
     Name = "${var.project_name}-mcp-auth-token"
+  }
+}
+
+resource "aws_secretsmanager_secret" "mcp_server_url" {
+  name                    = "${var.project_name}/mcp/server-url"
+  recovery_window_in_days = 0
+
+  tags = {
+    Name = "${var.project_name}-mcp-server-url"
+  }
+}
+
+resource "aws_security_group" "mcp_nlb" {
+  name        = "${var.project_name}-sg-mcp-nlb"
+  description = "Internal EKS MCP load balancer security group"
+  vpc_id      = module.vpc.vpc_id
+
+  tags = {
+    Name = "${var.project_name}-sg-mcp-nlb"
+  }
+}
+
+resource "aws_security_group_rule" "lambda_to_mcp_nlb" {
+  type                     = "ingress"
+  from_port                = 80
+  to_port                  = 80
+  protocol                 = "tcp"
+  source_security_group_id = module.lambda.lambda_security_group_id
+  security_group_id        = aws_security_group.mcp_nlb.id
+  description              = "Lambda agents to internal EKS MCP load balancer"
+}
+
+resource "aws_security_group_rule" "mcp_nlb_egress" {
+  type              = "egress"
+  from_port         = 8080
+  to_port           = 8080
+  protocol          = "tcp"
+  cidr_blocks       = [module.vpc.vpc_cidr]
+  security_group_id = aws_security_group.mcp_nlb.id
+  description       = "MCP load balancer to in-cluster MCP pods"
+}
+
+resource "aws_ecr_repository" "mcp_server" {
+  name                 = "${var.project_name}/eks-mcp-server"
+  image_tag_mutability = "MUTABLE"
+
+  image_scanning_configuration {
+    scan_on_push = true
+  }
+
+  tags = {
+    Name = "${var.project_name}-eks-mcp-server"
   }
 }

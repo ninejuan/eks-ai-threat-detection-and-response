@@ -16,6 +16,7 @@ These instructions override convenience, personal preference, and generic best p
 - EKS add-on updates must preserve user-managed config with `resolve_conflicts_on_update = "PRESERVE"`. Do not use `OVERWRITE`.
 - Do not add `Co-authored-by`, Sisyphus branding, or any other agent attribution to commits unless the user explicitly requests it.
 - Do not commit generated deployment artifacts such as Lambda zip bundles, build outputs, or other reproducible archives unless the user explicitly requests tracked artifacts.
+- Do not create one commit per file or per trivial artifact. Group commits by logical change that can be reviewed and reverted independently.
 - Do not modify `Makefile` or other operator-facing entrypoints merely to run one-off restart, rollout, debug, or recovery commands needed for the current session. Run those commands directly. Only change user-facing workflows when the change is a durable improvement for future operators.
 
 ## Instruction-Drift Defense
@@ -27,6 +28,7 @@ Before any non-trivial edit, run this mental checklist and verify with repositor
 3. Does it introduce placeholders, hardcoded account IDs/regions/domains, direct `kubectl`, direct Kubernetes clients from Lambda, or IRSA/OIDC drift?
 4. Does it mutate infrastructure outside the sanctioned Make targets?
 5. Does it add commit attribution the user did not ask for, commit generated artifacts, or turn Makefile into a one-off command wrapper for the current debugging session?
+6. Does it split commits by file instead of by logical unit?
 
 If the answer to any item is yes, do not proceed with that approach. Fix the design so it satisfies the explicit project constraints first, then implement.
 

@@ -50,6 +50,41 @@ resource "aws_iam_role_policy_attachment" "eks_node_ecr" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
 }
 
+resource "aws_iam_role" "mcp_server" {
+  name = "${var.project}-mcp-server"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Principal = {
+        Service = "pods.eks.amazonaws.com"
+      }
+      Action = [
+        "sts:AssumeRole",
+        "sts:TagSession",
+      ]
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "mcp_server_forensics" {
+  name = "${var.project}-mcp-server-forensics"
+  role = aws_iam_role.mcp_server.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid    = "WriteForensicsEvidence"
+      Effect = "Allow"
+      Action = [
+        "s3:PutObject",
+      ]
+      Resource = "arn:aws:s3:::${var.project}-forensics-${local.account_id}/*"
+    }]
+  })
+}
+
 resource "aws_iam_role" "lambda_agent" {
   name = "${var.project}-lambda-agent"
 
@@ -135,6 +170,15 @@ resource "aws_iam_role_policy" "lambda_agent" {
           "states:StartExecution",
         ]
         Resource = "arn:aws:states:${var.region}:${local.account_id}:stateMachine:${var.project}-*"
+      },
+      {
+        Sid    = "StepFunctionsTaskCallbacks"
+        Effect = "Allow"
+        Action = [
+          "states:SendTaskFailure",
+          "states:SendTaskSuccess",
+        ]
+        Resource = "*"
       },
       {
         Sid    = "S3ForensicsWrite"
@@ -242,6 +286,51 @@ resource "aws_iam_role_policy" "falco_sns" {
       Action   = "sns:Publish"
       Resource = "arn:aws:sns:${var.region}:${local.account_id}:${var.project}-falco-events"
     }]
+  })
+}
+
+resource "aws_iam_role" "falco_k8saudit" {
+  name = "${var.project}-falco-k8saudit"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Principal = {
+        Service = "pods.eks.amazonaws.com"
+      }
+      Action = [
+        "sts:AssumeRole",
+        "sts:TagSession",
+      ]
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "falco_k8saudit" {
+  name = "${var.project}-falco-k8saudit-policy"
+  role = aws_iam_role.falco_k8saudit.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "logs:DescribeLogGroups",
+          "logs:DescribeLogStreams",
+          "logs:FilterLogEvents",
+          "logs:GetLogEvents",
+          "logs:GetLogGroupFields",
+        ]
+        Resource = "arn:aws:logs:${var.region}:${local.account_id}:log-group:/aws/eks/${var.project}-*:*"
+      },
+      {
+        Effect   = "Allow"
+        Action   = "sns:Publish"
+        Resource = "arn:aws:sns:${var.region}:${local.account_id}:${var.project}-falco-events"
+      },
+    ]
   })
 }
 
@@ -398,6 +487,7 @@ resource "aws_iam_policy" "aws_lb_controller" {
           "elasticloadbalancing:DescribeLoadBalancers",
           "elasticloadbalancing:DescribeLoadBalancerAttributes",
           "elasticloadbalancing:DescribeListeners",
+          "elasticloadbalancing:DescribeListenerAttributes",
           "elasticloadbalancing:DescribeListenerCertificates",
           "elasticloadbalancing:DescribeSSLPolicies",
           "elasticloadbalancing:DescribeRules",
@@ -467,12 +557,17 @@ resource "aws_iam_policy" "aws_lb_controller" {
           "arn:aws:elasticloadbalancing:*:*:targetgroup/*/*",
           "arn:aws:elasticloadbalancing:*:*:loadbalancer/net/*/*",
           "arn:aws:elasticloadbalancing:*:*:loadbalancer/app/*/*",
+          "arn:aws:elasticloadbalancing:*:*:listener/net/*/*/*",
+          "arn:aws:elasticloadbalancing:*:*:listener/app/*/*/*",
+          "arn:aws:elasticloadbalancing:*:*:listener-rule/net/*/*/*",
+          "arn:aws:elasticloadbalancing:*:*:listener-rule/app/*/*/*",
         ]
       },
       {
         Effect = "Allow"
         Action = [
           "elasticloadbalancing:ModifyLoadBalancerAttributes",
+          "elasticloadbalancing:ModifyListenerAttributes",
           "elasticloadbalancing:SetIpAddressType",
           "elasticloadbalancing:SetSecurityGroups",
           "elasticloadbalancing:SetSubnets",
