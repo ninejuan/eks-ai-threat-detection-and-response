@@ -25,11 +25,11 @@ def lambda_handler(event: dict, context) -> dict:
     body = event.get("body", "")
     headers = event.get("headers", {})
 
-    if not _verify_slack_signature(body, headers, config.project):
-        return {"statusCode": 401, "body": "Invalid signature"}
-
     if event.get("isBase64Encoded"):
         body = base64.b64decode(body).decode()
+
+    if not _verify_slack_signature(body, headers, config.project):
+        return {"statusCode": 401, "body": "Invalid signature"}
 
     if path.endswith("/events"):
         return _handle_events(body)

@@ -124,7 +124,7 @@ def test_lambda_handler_decodes_base64_body_after_verification(aws_mocks, contex
         "rawPath": "/slack/events",
         "body": encoded_body,
         "isBase64Encoded": True,
-        "headers": {"x-slack-request-timestamp": timestamp, "x-slack-signature": _signature(encoded_body, timestamp)},
+        "headers": {"x-slack-request-timestamp": timestamp, "x-slack-signature": _signature(plain_body, timestamp)},
     }
 
     result = handler.lambda_handler(event, context)
