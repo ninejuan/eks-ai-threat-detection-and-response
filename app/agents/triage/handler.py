@@ -58,8 +58,35 @@ def lambda_handler(event: dict, context) -> dict:
             "requires_approval": True,
         }
 
+    _update_incident(triage, summary)
     _notify_slack(triage, summary)
     return triage
+
+
+def _update_incident(triage: dict, summary: dict) -> None:
+    from app.shared.dynamodb import IncidentStore
+
+    config = Config()
+    if not config.dynamodb_table_name:
+        return
+
+    incident_id = summary.get("incident_id", "")
+    if not incident_id:
+        return
+
+    store = IncidentStore(table_name=config.dynamodb_table_name)
+    store.update_incident(
+        incident_id=incident_id,
+        updates={
+            "severity": triage.get("severity", "UNKNOWN"),
+            "confidence": str(triage.get("confidence", 0)),
+            "category": triage.get("category", "unknown"),
+            "triage_reasoning": triage.get("reasoning", ""),
+            "auto_remediate": triage.get("auto_remediate", False),
+            "requires_approval": triage.get("requires_approval", True),
+            "status": "triaged",
+        },
+    )
 
 
 def _notify_slack(triage: dict, summary: dict) -> None:

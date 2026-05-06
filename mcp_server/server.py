@@ -206,29 +206,45 @@ def checkpoint_pod(pod_name: str, namespace: str, container_name: str | None = N
 
 
 def capture_hubble_flows(pod_name: str, namespace: str, s3_destination: str = "") -> dict:
-    endpoints = CUSTOM.list_namespaced_custom_object(
-        group="cilium.io",
-        version="v1",
-        namespace=namespace,
-        plural="ciliumendpoints",
-        label_selector=f"io.kubernetes.pod.name={pod_name}",
-    )
-    bucket, key = _forensics_destination("hubble", pod_name, s3_destination)
+    pod = CORE.read_namespaced_pod(name=pod_name, namespace=namespace)
+    pod_ip = pod.status.pod_ip or "unknown"
+    host_ip = pod.status.host_ip or "unknown"
+    node_name = pod.spec.node_name or "unknown"
+
+    endpoints = {}
+    try:
+        endpoints = CUSTOM.list_namespaced_custom_object(
+            group="cilium.io",
+            version="v2",
+            namespace=namespace,
+            plural="ciliumendpoints",
+            label_selector=f"io.kubernetes.pod.name={pod_name}",
+        )
+    except ApiException:
+        endpoints = {"items": [], "note": "CiliumEndpoints not available (ENI mode)"}
+
+    bucket, key = _forensics_destination("network-evidence", pod_name, s3_destination)
     evidence_uri = _put_forensics_json(
         bucket,
         key,
         {
             "captured_at": datetime.now(tz=UTC).isoformat(),
-            "kind": "cilium_hubble_flow_snapshot",
+            "kind": "network_flow_snapshot",
             "pod_name": pod_name,
             "namespace": namespace,
+            "pod_ip": pod_ip,
+            "host_ip": host_ip,
+            "node_name": node_name,
             "cilium_endpoints": endpoints,
+            "pod_labels": pod.metadata.labels or {},
         },
     )
     return _success(
         "capture_hubble_flows",
         pod=pod_name,
         namespace=namespace,
+        pod_ip=pod_ip,
+        node_name=node_name,
         endpoints_found=len(endpoints.get("items", [])),
         evidence_uri=evidence_uri,
     )

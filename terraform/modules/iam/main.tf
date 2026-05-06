@@ -74,14 +74,25 @@ resource "aws_iam_role_policy" "mcp_server_forensics" {
 
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [{
-      Sid    = "WriteForensicsEvidence"
-      Effect = "Allow"
-      Action = [
-        "s3:PutObject",
-      ]
-      Resource = "arn:aws:s3:::${var.project}-forensics-${local.account_id}/*"
-    }]
+    Statement = [
+      {
+        Sid    = "WriteForensicsEvidence"
+        Effect = "Allow"
+        Action = [
+          "s3:PutObject",
+        ]
+        Resource = "arn:aws:s3:::${var.project}-forensics-${local.account_id}/*"
+      },
+      {
+        Sid    = "KMSForForensics"
+        Effect = "Allow"
+        Action = [
+          "kms:GenerateDataKey",
+          "kms:Decrypt",
+        ]
+        Resource = "arn:aws:kms:${var.region}:${local.account_id}:key/*"
+      },
+    ]
   })
 }
 

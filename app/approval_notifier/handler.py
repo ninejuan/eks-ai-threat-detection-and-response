@@ -30,6 +30,8 @@ def lambda_handler(event: dict, context) -> dict:
         for i, a in enumerate(actions[:5])
     )
 
+    _store_task_token(config, incident_id, task_token)
+
     _send_approval_request(
         config=config,
         incident_id=incident_id,
@@ -42,6 +44,15 @@ def lambda_handler(event: dict, context) -> dict:
 
     logger.info("Approval request sent for incident %s (token: %s...)", incident_id, task_token[:20])
     return {"status": "approval_requested", "incident_id": incident_id}
+
+
+def _store_task_token(config: Config, incident_id: str, task_token: str) -> None:
+    if not config.dynamodb_table_name or not task_token:
+        return
+    from app.shared.dynamodb import IncidentStore
+
+    store = IncidentStore(table_name=config.dynamodb_table_name)
+    store.update_incident(incident_id, {"task_token": task_token, "status": "pending_approval"})
 
 
 def _send_approval_request(

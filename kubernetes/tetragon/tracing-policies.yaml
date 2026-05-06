@@ -59,6 +59,20 @@ spec:
               values:
                 - /etc/shadow
                 - /etc/gshadow
+          matchBinaries:
+            - operator: NotIn
+              values:
+                - /usr/bin/apt-get
+                - /usr/bin/dpkg
+                - /usr/bin/apt
+                - /usr/sbin/adduser
+                - /usr/sbin/useradd
+                - /usr/sbin/groupadd
+                - /usr/bin/chfn
+                - /usr/bin/chsh
+                - /usr/bin/passwd
+                - /sbin/apk
+                - /usr/bin/apk
           matchActions:
             - action: Post
 ---

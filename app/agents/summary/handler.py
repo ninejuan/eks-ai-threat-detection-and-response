@@ -70,5 +70,7 @@ def _store_incident(config: Config, summary: dict) -> None:
             "summary": summary.get("summary", ""),
             "status": "detected",
             "mitre_technique": summary.get("mitre_technique", ""),
+            "affected_resources": summary.get("affected_resources", []),
+            "raw_indicators": summary.get("raw_indicators", []),
         },
     )

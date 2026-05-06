@@ -1,5 +1,7 @@
+import http.client
 import json
 import logging
+from urllib.parse import urlparse
 
 from app.shared.config import Config
 from app.shared.mcp_client import McpClient, McpClientError
@@ -18,6 +20,8 @@ ALLOWED_TOOLS = {
     "capture_hubble_flows",
 }
 
+_warmed_up = False
+
 
 def _mcp_server_url(config: Config) -> str:
     if config.mcp_server_url:
@@ -31,12 +35,33 @@ def _mcp_server_url(config: Config) -> str:
 
 
 def _client() -> McpClient:
+    global _warmed_up  # noqa: PLW0603
+
     config = Config()
+    url = _mcp_server_url(config)
+
+    if not _warmed_up:
+        _warmup(url)
+        _warmed_up = True
+
     return McpClient(
-        server_url=_mcp_server_url(config),
+        server_url=url,
         auth_secret_id=config.mcp_auth_secret_id,
         timeout_seconds=config.mcp_timeout_seconds,
     )
+
+
+def _warmup(server_url: str) -> None:
+    parsed = urlparse(server_url)
+    try:
+        conn = http.client.HTTPConnection(parsed.netloc, timeout=10)
+        conn.request("GET", "/healthz")
+        resp = conn.getresponse()
+        resp.read()
+        conn.close()
+        logger.info("MCP warmup: %s", resp.status)
+    except Exception as error:
+        logger.warning("MCP warmup failed (non-fatal): %s", error)
 
 
 def execute_tool(tool_name: str, tool_input: dict) -> dict:

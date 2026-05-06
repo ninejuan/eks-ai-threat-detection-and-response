@@ -91,11 +91,11 @@ def test_capture_hubble_flows_writes_forensics_evidence(server_module, monkeypat
 
     assert result["status"] == "success"
     assert result["endpoints_found"] == 1
-    assert result["evidence_uri"].startswith("s3://atdr-forensics-test/hubble/pod-a/")
+    assert result["evidence_uri"].startswith("s3://atdr-forensics-test/network-evidence/pod-a/")
     assert captured["Bucket"] == "atdr-forensics-test"
-    assert captured["Key"].startswith("hubble/pod-a/")
+    assert captured["Key"].startswith("network-evidence/pod-a/")
 
     payload = json.loads(captured["Body"].decode("utf-8"))
-    assert payload["kind"] == "cilium_hubble_flow_snapshot"
+    assert payload["kind"] == "network_flow_snapshot"
     assert payload["pod_name"] == "pod-a"
     assert payload["cilium_endpoints"]["items"][0]["metadata"]["name"] == "endpoint-a"

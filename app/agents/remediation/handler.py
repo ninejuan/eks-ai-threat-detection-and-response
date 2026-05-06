@@ -222,6 +222,13 @@ def _update_incident_status(config: Config, event: dict, result: dict) -> None:
     if not incident_id:
         return
 
+    execution_log = result.get("execution_log", [])
+    evidence_uris = []
+    for entry in execution_log:
+        r = entry.get("result", {})
+        if isinstance(r, dict) and r.get("evidence_uri"):
+            evidence_uris.append(r["evidence_uri"])
+
     store = IncidentStore(table_name=config.dynamodb_table_name)
     store.update_incident(
         incident_id=incident_id,
@@ -229,8 +236,65 @@ def _update_incident_status(config: Config, event: dict, result: dict) -> None:
             "status": "remediated",
             "actions_taken": result.get("actions_taken", 0),
             "remediation_status": result.get("status", "unknown"),
+            "execution_log": execution_log,
+            "evidence_uris": evidence_uris,
         },
     )
+
+    _notify_remediation_complete(config, incident_id, execution_log, evidence_uris)
+
+
+def _notify_remediation_complete(config: Config, incident_id: str, execution_log: list, evidence_uris: list) -> None:
+    from urllib.request import Request, urlopen
+
+    from app.shared.secrets import get_secret
+
+    secret = get_secret(f"{config.project}/slack/bot-token")
+    webhook_url = secret.get("webhook_url", "")
+    if not webhook_url:
+        return
+
+    succeeded = [e for e in execution_log if e.get("tool") and e.get("result", {}).get("status") == "success"]
+    failed = [e for e in execution_log if e.get("tool") and e.get("result", {}).get("status") != "success"]
+
+    status_emoji = "✅" if not failed else "⚠️"
+    summary_text = f"{len(succeeded)} succeeded, {len(failed)} failed"
+
+    tool_lines = []
+    for entry in execution_log:
+        if "tool" not in entry:
+            continue
+        r = entry.get("result", {})
+        status = r.get("status", "unknown")
+        marker = "✅" if status == "success" else "❌"
+        tool_lines.append(f"{marker} `{entry['tool']}` — {status}")
+
+    evidence_text = ""
+    if evidence_uris:
+        evidence_text = "\n*Forensic Evidence:*\n" + "\n".join(f"• `{uri}`" for uri in evidence_uris)
+
+    blocks = [
+        {
+            "type": "header",
+            "text": {"type": "plain_text", "text": f"{status_emoji} Remediation Complete: {incident_id}"},
+        },
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": f"*Result:* {summary_text}\n\n" + "\n".join(tool_lines)},
+        },
+    ]
+
+    if evidence_text:
+        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": evidence_text}})
+
+    color = "#36a64f" if not failed else "#ff9900"
+    payload = json.dumps({"attachments": [{"color": color, "blocks": blocks}]}).encode()
+    req = Request(webhook_url, data=payload, headers={"Content-Type": "application/json"})  # noqa: S310
+    try:
+        with urlopen(req, timeout=10) as resp:  # noqa: S310
+            logger.info("Remediation notification sent: %s", resp.status)
+    except Exception as error:
+        logger.warning("Failed to send remediation notification: %s", error)
 
 
 def _execute_tool(tool_name: str, tool_input: dict) -> dict:

@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 from urllib.parse import parse_qs
@@ -65,6 +66,8 @@ def _dispatch_atdr(text: str, config: Config) -> dict:  # noqa: PLR0911, PLR0912
         return assign_response(config, incident_id, assignee)
     if subcommand == "escalate":
         return escalate_response(config, rest.strip())
+    if subcommand == "remediate":
+        return _remediate_response(config, rest.strip())
     if subcommand == "report":
         return report_response(config, rest.strip() or "daily")
     if subcommand == "ioc":
@@ -194,3 +197,99 @@ def _presign_evidence(incident: dict) -> list[str]:
 def _split_id_and_rest(text: str) -> tuple[str, str]:
     parts = text.strip().split(maxsplit=1)
     return (parts[0], parts[1] if len(parts) > 1 else "") if parts else ("", "")
+
+
+def _remediate_response(config: Config, incident_id: str) -> dict:
+    if not incident_id:
+        return blocks_response(
+            [{"type": "section", "text": {"type": "mrkdwn", "text": "❌ Usage: `/atdr remediate <incident_id>`"}}],
+            ephemeral=True,
+        )
+
+    try:
+        store = IncidentStore(config.dynamodb_table_name)
+        incident = store.get_incident(incident_id)
+    except Exception:
+        return blocks_response(
+            [{"type": "section", "text": {"type": "mrkdwn", "text": "❌ Could not fetch incident from DynamoDB."}}],
+            ephemeral=True,
+        )
+
+    if not incident:
+        return blocks_response(
+            [{"type": "section", "text": {"type": "mrkdwn", "text": f"❌ Incident `{incident_id}` not found."}}],
+            ephemeral=True,
+        )
+
+    task_token = incident.get("task_token", "")
+
+    if task_token:
+        try:
+            import boto3
+
+            sfn = boto3.client("stepfunctions")
+            sfn.send_task_success(
+                taskToken=task_token,
+                output=json.dumps(
+                    {"decision": "approved", "approved_by": "manual_remediate", "source": "/atdr remediate"}
+                ),
+            )
+            store.update_incident(incident_id, {"status": "remediation_approved"})
+            return blocks_response(
+                [
+                    {
+                        "type": "section",
+                        "text": {"type": "mrkdwn", "text": f"✅ Remediation approved for `{incident_id}`"},
+                    },
+                    {
+                        "type": "context",
+                        "elements": [{"type": "mrkdwn", "text": "Step Functions pipeline will execute remediation."}],
+                    },
+                ]
+            )
+        except Exception as error:
+            logger.warning("SendTaskSuccess failed for %s: %s", incident_id, error)
+            return _invoke_remediation_directly(config, incident_id, incident)
+    else:
+        return _invoke_remediation_directly(config, incident_id, incident)
+
+
+def _invoke_remediation_directly(config: Config, incident_id: str, incident: dict) -> dict:
+    try:
+        import boto3
+
+        lambda_client = boto3.client("lambda")
+        payload = json.dumps(
+            {
+                "incident_id": incident_id,
+                "summary": incident,
+                "source": "manual_remediate",
+            },
+            default=str,
+        )
+        lambda_client.invoke(
+            FunctionName=f"{config.project}-remediation-agent",
+            InvocationType="Event",
+            Payload=payload.encode(),
+        )
+        from app.shared.dynamodb import IncidentStore
+
+        IncidentStore(config.dynamodb_table_name).update_incident(incident_id, {"status": "remediation_triggered"})
+        return blocks_response(
+            [
+                {
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": f"⚡ Remediation triggered directly for `{incident_id}`"},
+                },
+                {
+                    "type": "context",
+                    "elements": [{"type": "mrkdwn", "text": "Task token expired. Remediation Agent invoked directly."}],
+                },
+            ]
+        )
+    except Exception as error:
+        logger.warning("Direct remediation invoke failed for %s: %s", incident_id, error)
+        return blocks_response(
+            [{"type": "section", "text": {"type": "mrkdwn", "text": f"❌ Failed to trigger remediation: {error}"}}],
+            ephemeral=True,
+        )

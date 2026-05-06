@@ -63,9 +63,9 @@ resource "aws_eks_node_group" "general" {
   instance_types = ["t3.large"]
 
   scaling_config {
-    desired_size = 1
+    desired_size = 2
     min_size     = 0
-    max_size     = 3
+    max_size     = 5
   }
 
   update_config {
@@ -91,9 +91,9 @@ resource "aws_eks_node_group" "compute" {
   instance_types = ["c5.large"]
 
   scaling_config {
-    desired_size = 2
+    desired_size = 3
     min_size     = 0
-    max_size     = 3
+    max_size     = 5
   }
 
   labels = {

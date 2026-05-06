@@ -178,12 +178,22 @@ def remediation_log_blocks(incident: dict) -> list[dict]:
         return blocks
     lines = []
     for entry in logs[:10]:
-        tool = entry.get("tool") or entry.get("name") or entry.get("action") or "unknown_tool"
-        status = entry.get("status") or entry.get("result") or "unknown"
+        if "tool" not in entry:
+            continue
+        tool = entry.get("tool") or "unknown_tool"
+        result = entry.get("result", {})
+        if isinstance(result, dict):
+            status = result.get("status", "unknown")
+            error = result.get("error", "")
+        else:
+            status = entry.get("status", "unknown")
+            error = entry.get("error", "")
         marker = "✅" if str(status).lower() in {"success", "succeeded", "ok"} else "❌"
-        detail = entry.get("error") or entry.get("message") or entry.get("target") or ""
-        lines.append(f"{marker} `{tool}` — *{status}* {to_slack_mrkdwn(str(detail))}".strip())
-    blocks.append(_section("\n".join(lines)))
+        detail = error if status != "success" else ""
+        lines.append(
+            f"{marker} `{tool}` — *{status}*{(' — ' + to_slack_mrkdwn(str(detail))) if detail else ''}".strip()
+        )
+    blocks.append(_section("\n".join(lines) if lines else "_No tool executions recorded._"))
     return blocks
 
 
@@ -299,7 +309,7 @@ def extract_iocs(incident: dict) -> dict[str, list[str]]:
 
 
 def extract_evidence_uris(incident: dict) -> list[str]:
-    text = json.dumps(incident, ensure_ascii=False)
+    text = json.dumps(incident, ensure_ascii=False, default=str)
     uris = set(re.findall(r"s3://[^\s\"'<>]+", text))
     for key in ["evidence_uris", "forensic_evidence", "checkpoint_pod", "capture_hubble_flows"]:
         value = incident.get(key)

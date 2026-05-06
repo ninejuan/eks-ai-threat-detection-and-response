@@ -23,8 +23,8 @@ def test_send_incident_posts_normal_blocks(monkeypatch):
 
     payload = json.loads(sent["req"].data.decode())
     assert sent["timeout"] == 10
-    assert payload["blocks"][0]["text"]["text"] == "ATDR Incident: inc-1"
-    assert "*Severity:* P1" in payload["blocks"][1]["fields"][0]["text"]
+    assert payload["attachments"][0]["blocks"][0]["text"]["text"] == "ATDR Incident: inc-1"
+    assert "*Severity:* P1" in payload["attachments"][0]["blocks"][1]["fields"][0]["text"]
 
 
 def test_send_incident_posts_degraded_blocks(monkeypatch):

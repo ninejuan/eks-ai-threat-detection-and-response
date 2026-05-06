@@ -19,7 +19,7 @@ class McpClientError(RuntimeError):
 class McpClient:
     server_url: str
     auth_secret_id: str
-    timeout_seconds: int = 10
+    timeout_seconds: int = 30
 
     def call_tool(self, tool_name: str, tool_input: dict) -> dict:
         if not self.server_url:
@@ -69,15 +69,26 @@ class McpClient:
             "MCP-Protocol-Version": MCP_PROTOCOL_VERSION,
         }
 
-        connection = connection_cls(parsed.netloc, timeout=self.timeout_seconds)
-        try:
-            connection.request("POST", path, body=data, headers=headers)
-            response = connection.getresponse()
-            body = response.read().decode("utf-8")
-        except OSError as error:
-            raise McpClientError(f"MCP server connection failed: {error}") from error
-        finally:
-            connection.close()
+        last_error = None
+        for attempt in range(3):
+            connection = connection_cls(parsed.netloc, timeout=self.timeout_seconds)
+            try:
+                connection.request("POST", path, body=data, headers=headers)
+                response = connection.getresponse()
+                body = response.read().decode("utf-8")
+                last_error = None
+                break
+            except OSError as error:
+                last_error = error
+                logger.warning("MCP connection attempt %d failed: %s", attempt + 1, error)
+                import time
+
+                time.sleep(1)
+            finally:
+                connection.close()
+
+        if last_error:
+            raise McpClientError(f"MCP server connection failed: {last_error}") from last_error
 
         if response.status >= 400:
             logger.warning("MCP server returned HTTP %s: %s", response.status, body)

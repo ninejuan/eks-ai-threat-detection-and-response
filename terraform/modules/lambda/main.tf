@@ -361,7 +361,7 @@ resource "aws_sfn_state_machine" "agent_pipeline" {
             "task_token.$" = "$$.Task.Token"
           }
         }
-        TimeoutSeconds = 3600
+        TimeoutSeconds = 86400
         ResultPath     = "$.approval"
         Catch = [{
           ErrorEquals = ["States.Timeout"]

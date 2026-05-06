@@ -36,7 +36,7 @@ def handle_interactions(body: str, config: Config) -> dict[str, Any]:
     return {"statusCode": 200, "body": "ok"}
 
 
-def _handle_approval_action(payload: dict[str, Any], config: Config) -> dict[str, Any]:
+def _handle_approval_action(payload: dict[str, Any], config: Config) -> dict[str, Any]:  # noqa: PLR0912, PLR0915
     actions = payload.get("actions", [])
     if not actions:
         return {"statusCode": 200, "body": "ok"}
@@ -53,10 +53,65 @@ def _handle_approval_action(payload: dict[str, Any], config: Config) -> dict[str
     if action_id in {"ack_incident", "investigate_incident", "escalate_incident"}:
         incident_id = value or "unknown"
         if action_id == "ack_incident":
-            return ack_response(config, incident_id, user=f"<@{user}>")
-        if action_id == "investigate_incident":
-            return investigate_response(config, incident_id, user=f"<@{user}>")
-        return escalate_response(config, incident_id, user=f"<@{user}>")
+            ack_response(config, incident_id, user=f"<@{user}>")
+            status_emoji = "✅"
+            status_text = f"Acknowledged by <@{user}>"
+        elif action_id == "investigate_incident":
+            investigate_response(config, incident_id, user=f"<@{user}>")
+            status_emoji = "🔎"
+            status_text = f"Investigation started by <@{user}>"
+        else:
+            escalate_response(config, incident_id, user=f"<@{user}>")
+            status_emoji = "🚨"
+            status_text = f"Escalated by <@{user}>"
+
+        original_message = payload.get("message", {})
+        original_blocks = original_message.get("blocks", [])
+        if not original_blocks:
+            attachments = original_message.get("attachments", [])
+            if attachments:
+                original_blocks = attachments[0].get("blocks", [])
+
+        updated_blocks = []
+        actions_block = None
+
+        for b in original_blocks:
+            if b.get("type") == "actions":
+                actions_block = b
+            else:
+                updated_blocks.append(b)
+
+        now_ts = int(time.time())
+        history_entry = f"{status_emoji} {status_text} — <!date^{now_ts}^{{time}}|now>"
+        existing_history = None
+        for i, b in enumerate(updated_blocks):
+            if b.get("block_id") == "incident_history":
+                existing_history = i
+                break
+
+        if existing_history is not None:
+            old_text = updated_blocks[existing_history]["text"]["text"]
+            updated_blocks[existing_history]["text"]["text"] = old_text + "\n" + history_entry
+        else:
+            updated_blocks.append({"type": "divider"})
+            updated_blocks.append(
+                {
+                    "type": "section",
+                    "block_id": "incident_history",
+                    "text": {"type": "mrkdwn", "text": f"*Activity:*\n{history_entry}"},
+                }
+            )
+
+        if actions_block:
+            updated_blocks.append(actions_block)
+
+        if response_url:
+            _post_response_url(response_url, updated_blocks)
+        return {
+            "statusCode": 200,
+            "headers": {"Content-Type": "application/json"},
+            "body": json.dumps({"blocks": updated_blocks, "replace_original": True}),
+        }
 
     parts = value.split("|") if value else []
     incident_id = parts[0] if parts else "unknown"

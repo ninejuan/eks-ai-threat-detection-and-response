@@ -84,6 +84,11 @@ class SlackNotifier:
         blocks = self._build_degraded_blocks(incident) if mode == "degraded" else self._build_normal_blocks(incident)
 
         payload = json.dumps({"blocks": blocks}).encode()
+        if mode == "normal":
+            color = severity_color(incident.get("severity", "UNKNOWN"))
+            payload = json.dumps({"attachments": [{"color": color, "blocks": blocks}]}).encode()
+        else:
+            payload = json.dumps({"blocks": blocks}).encode()
         req = Request(webhook_url, data=payload, headers={"Content-Type": "application/json"})  # noqa: S310
 
         with urlopen(req, timeout=10) as resp:  # noqa: S310
