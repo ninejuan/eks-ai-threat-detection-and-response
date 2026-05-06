@@ -116,6 +116,7 @@ module "lambda" {
   knowledge_base_id        = var.knowledge_base_id
   mcp_auth_secret_id       = aws_secretsmanager_secret.mcp_auth_token.name
   mcp_server_url_secret_id = aws_secretsmanager_secret.mcp_server_url.name
+  forensics_bucket_name    = module.s3.forensics_bucket_id
 }
 
 module "slack" {

@@ -231,10 +231,11 @@ platform-down:
 
 deploy-lambdas: build-lambdas
 	@echo "Deploying Lambda functions..."
-	@for agent in summary triage solution remediation; do \
-		echo "  $$agent-agent"; \
+	@for agent in summary triage solution remediation forensic_synthesis; do \
+		fn_suffix=$$(echo $$agent | tr '_' '-'); \
+		echo "  atdr-$$fn_suffix-agent"; \
 		aws lambda update-function-code \
-			--function-name atdr-$$agent-agent \
+			--function-name atdr-$$fn_suffix-agent \
 			--zip-file fileb://$(LAMBDA_MOD)/$$agent.zip \
 			--region $(REGION) --no-cli-pager; \
 	done
@@ -429,10 +430,10 @@ build-layer:
 
 build-lambdas:
 	@rm -rf build/lambdas
-	@rm -f $(LAMBDA_MOD)/summary.zip $(LAMBDA_MOD)/triage.zip $(LAMBDA_MOD)/solution.zip $(LAMBDA_MOD)/remediation.zip
+	@rm -f $(LAMBDA_MOD)/summary.zip $(LAMBDA_MOD)/triage.zip $(LAMBDA_MOD)/solution.zip $(LAMBDA_MOD)/remediation.zip $(LAMBDA_MOD)/forensic_synthesis.zip
 	@rm -f $(LAMBDA_MOD)/ingestor.zip $(LAMBDA_MOD)/degraded_notifier.zip $(LAMBDA_MOD)/approval_notifier.zip
 	@rm -f terraform/modules/slack/slack_bot.zip
-	@for agent in summary triage solution remediation; do \
+	@for agent in summary triage solution remediation forensic_synthesis; do \
 		mkdir -p build/lambdas/$$agent/app/agents && \
 		cp app/agents/$$agent/*.py build/lambdas/$$agent/ && \
 		cp -r app/agents/$$agent build/lambdas/$$agent/app/agents/$$agent && \

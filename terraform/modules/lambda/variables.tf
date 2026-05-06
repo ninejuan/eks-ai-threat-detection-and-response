@@ -82,3 +82,8 @@ variable "mcp_server_url_secret_id" {
   type        = string
   default     = "atdr/mcp/server-url"
 }
+
+variable "forensics_bucket_name" {
+  description = "Name of the forensics S3 bucket where evidence manifests and synthesis reports are written"
+  type        = string
+}

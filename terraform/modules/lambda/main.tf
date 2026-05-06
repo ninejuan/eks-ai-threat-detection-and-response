@@ -20,6 +20,11 @@ locals {
       timeout     = 180
       model_id    = var.bedrock_smart_model_id
     }
+    forensic_synthesis = {
+      memory_size = 1024
+      timeout     = 180
+      model_id    = var.bedrock_smart_model_id
+    }
   }
 }
 
@@ -66,7 +71,7 @@ resource "aws_lambda_layer_version" "dependencies" {
 resource "aws_lambda_function" "agent" {
   for_each = local.agents
 
-  function_name = "${var.project}-${each.key}-agent"
+  function_name = "${var.project}-${replace(each.key, "_", "-")}-agent"
   role          = var.execution_role_arn
   runtime       = "python3.12"
   handler       = "handler.lambda_handler"
@@ -90,6 +95,7 @@ resource "aws_lambda_function" "agent" {
       DYNAMODB_TABLE_NAME      = var.dynamodb_table_name
       MCP_AUTH_SECRET_ID       = var.mcp_auth_secret_id
       MCP_SERVER_URL_SECRET_ID = var.mcp_server_url_secret_id
+      FORENSICS_BUCKET         = var.forensics_bucket_name
       PROJECT                  = var.project
       LOG_LEVEL                = "INFO"
     }
@@ -100,7 +106,7 @@ resource "aws_lambda_function" "agent" {
   }
 
   tags = {
-    Name  = "${var.project}-${each.key}-agent"
+    Name  = "${var.project}-${replace(each.key, "_", "-")}-agent"
     Agent = each.key
   }
 
@@ -398,6 +404,31 @@ resource "aws_sfn_state_machine" "agent_pipeline" {
           IntervalSeconds = 5
           BackoffRate     = 2
           MaxAttempts     = 1
+        }]
+        Catch = [{
+          ErrorEquals = ["States.ALL"]
+          Next        = "ForensicSynthesisAgent"
+          ResultPath  = "$.error"
+        }]
+        Next = "ForensicSynthesisAgent"
+      }
+
+      ForensicSynthesisAgent = {
+        Type     = "Task"
+        Resource = "arn:aws:states:::lambda:invoke"
+        Parameters = {
+          FunctionName = aws_lambda_function.agent["forensic_synthesis"].arn
+          "Payload.$"  = "$"
+        }
+        ResultSelector = {
+          "body.$" = "$.Payload"
+        }
+        ResultPath = "$.forensic_synthesis"
+        Retry = [{
+          ErrorEquals     = ["States.ALL"]
+          IntervalSeconds = 5
+          BackoffRate     = 2
+          MaxAttempts     = 2
         }]
         Catch = [{
           ErrorEquals = ["States.ALL"]
