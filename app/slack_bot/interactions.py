@@ -9,13 +9,15 @@ from urllib.request import Request, urlopen
 import boto3
 
 from app.shared.config import Config
+from app.slack_bot import modals
 from app.slack_bot.oncall import ack_response, escalate_response, investigate_response
 
 logger = logging.getLogger(__name__)
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
+Block = dict[str, Any]
 
 
-def handle_interactions(body: str, config: Config) -> dict:
+def handle_interactions(body: str, config: Config) -> dict[str, Any]:
     parsed = parse_qs(body)
     payload_str = parsed.get("payload", [""])[0]
     if not payload_str:
@@ -26,11 +28,15 @@ def handle_interactions(body: str, config: Config) -> dict:
 
     if action_type == "block_actions":
         return _handle_approval_action(payload, config)
+    if action_type == "view_submission":
+        return modals.handle_view_submission(payload, config)
+    if action_type == "shortcut":
+        return _handle_shortcut(payload, config)
 
     return {"statusCode": 200, "body": "ok"}
 
 
-def _handle_approval_action(payload: dict, config: Config) -> dict:
+def _handle_approval_action(payload: dict[str, Any], config: Config) -> dict[str, Any]:
     actions = payload.get("actions", [])
     if not actions:
         return {"statusCode": 200, "body": "ok"}
@@ -40,6 +46,9 @@ def _handle_approval_action(payload: dict, config: Config) -> dict:
     value = action.get("value", "")
     user = payload.get("user", {}).get("username", "unknown")
     response_url = payload.get("response_url", "")
+
+    if action_id in {"view_all_incidents", "generate_report", "view_oncall", "open_incident_detail"}:
+        return _handle_home_action(payload, config, action_id, value)
 
     if action_id in {"ack_incident", "investigate_incident", "escalate_incident"}:
         incident_id = value or "unknown"
@@ -68,7 +77,44 @@ def _handle_approval_action(payload: dict, config: Config) -> dict:
     }
 
 
-def _post_response_url(response_url: str, blocks: list[dict]) -> None:
+def _open_modal_response(opener: Any, payload: dict[str, Any], config: Config) -> dict[str, Any]:
+    trigger_id = payload.get("trigger_id", "")
+    user_id = payload.get("user", {}).get("id", "")
+    channel_id = payload.get("channel", {}).get("id", "")
+    opener(trigger_id, config, channel_id, user_id)
+    return {"statusCode": 200, "body": "ok"}
+
+
+def _handle_home_action(payload: dict[str, Any], config: Config, action_id: str, value: str) -> dict[str, Any]:
+    if action_id == "view_all_incidents":
+        return _open_modal_response(modals.open_incident_filter_modal, payload, config)
+    if action_id == "generate_report":
+        return _open_modal_response(modals.open_report_modal, payload, config)
+    if action_id == "open_incident_detail":
+        modals.open_incident_detail_modal(payload.get("trigger_id", ""), config, value)
+        return {"statusCode": 200, "body": "ok"}
+
+    user_id = payload.get("user", {}).get("id", "")
+    channel_id = payload.get("channel", {}).get("id", "")
+    modals.post_oncall_status(config, user_id, channel_id)
+    return {"statusCode": 200, "body": "ok"}
+
+
+def _handle_shortcut(payload: dict[str, Any], config: Config) -> dict[str, Any]:
+    callback_id = payload.get("callback_id", "")
+    trigger_id = payload.get("trigger_id", "")
+    user_id = payload.get("user", {}).get("id", "")
+    channel_id = payload.get("channel", {}).get("id", "")
+
+    if callback_id == "atdr_view_status":
+        modals.open_status_modal(trigger_id, config)
+    elif callback_id == "atdr_ack_incident":
+        modals.open_ack_incident_modal(trigger_id, config, channel_id, user_id)
+
+    return {"statusCode": 200, "body": "ok"}
+
+
+def _post_response_url(response_url: str, blocks: list[Block]) -> None:
     payload = json.dumps({"blocks": blocks, "replace_original": True}).encode()
     req = Request(response_url, data=payload, headers={"Content-Type": "application/json"})  # noqa: S310
     try:
@@ -82,7 +128,7 @@ def _process_approval(
     config: Config, incident_id: str, task_token: str, user: str, action_id: str, approved: bool
 ) -> None:
     try:
-        dynamodb = boto3.resource("dynamodb")
+        dynamodb: Any = boto3.resource("dynamodb")
         table = dynamodb.Table(f"{config.project}-approval-audit")
 
         audit_record: dict[str, Any] = {
@@ -108,7 +154,7 @@ def _process_approval(
         logger.exception("Failed to process approval for %s", incident_id)
 
 
-def _approval_response_blocks(incident_id: str, user: str, approved: bool) -> list[dict]:
+def _approval_response_blocks(incident_id: str, user: str, approved: bool) -> list[Block]:
     if approved:
         emoji = "✅"
         action_text = "approved"

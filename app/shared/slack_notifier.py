@@ -3,6 +3,8 @@ import logging
 import re
 import time
 from datetime import UTC, datetime
+from typing import Any
+from urllib.error import URLError
 from urllib.request import Request, urlopen
 
 from app.shared.secrets import get_secret
@@ -38,15 +40,42 @@ def slack_date(value: object, fallback: str = "unknown") -> str:
     return f"<!date^{timestamp}^{{date_short_pretty}} {{time}}|{fallback}>"
 
 
+def slack_api_call(method: str, payload: dict[str, Any], config: Any) -> dict[str, Any]:
+    secret = get_secret(f"{config.project}/slack/bot-token")
+    bot_token = secret.get("token", "")
+    if not bot_token:
+        logger.warning("Slack bot token not configured for %s", method)
+        return {"ok": False, "error": "missing_bot_token"}
+
+    request = Request(
+        f"https://slack.com/api/{method}",
+        data=json.dumps(payload).encode(),
+        headers={
+            "Content-Type": "application/json; charset=utf-8",
+            "Authorization": f"Bearer {bot_token}",
+        },
+    )
+    try:
+        with urlopen(request, timeout=10) as response:  # noqa: S310
+            result: dict[str, Any] = json.loads(response.read().decode())
+    except (URLError, TimeoutError, json.JSONDecodeError) as error:
+        logger.warning("Slack API call failed for %s: %s", method, error)
+        return {"ok": False, "error": "request_failed"}
+
+    if not result.get("ok"):
+        logger.warning("Slack API error for %s: %s", method, result.get("error"))
+    return result
+
+
 class SlackNotifier:
     def __init__(self, project: str):
-        self._project = project
+        self._project: str = project
 
     def _get_webhook_url(self) -> str:
         secret = get_secret(f"{self._project}/slack/bot-token")
         return secret.get("webhook_url", "")
 
-    def send_incident(self, incident: dict, mode: str = "normal") -> None:
+    def send_incident(self, incident: dict[str, Any], mode: str = "normal") -> None:
         webhook_url = self._get_webhook_url()
         if not webhook_url:
             logger.warning("Slack webhook URL not configured, skipping notification")
@@ -60,7 +89,7 @@ class SlackNotifier:
         with urlopen(req, timeout=10) as resp:  # noqa: S310
             logger.info("Slack notification sent: %s", resp.status)
 
-    def _build_normal_blocks(self, incident: dict) -> list[dict]:
+    def _build_normal_blocks(self, incident: dict[str, Any]) -> list[dict[str, Any]]:
         severity = incident.get("severity", "UNKNOWN")
         source = incident.get("source", "UNKNOWN")
         summary = to_slack_mrkdwn(incident.get("summary", "No summary available"))
@@ -124,7 +153,7 @@ class SlackNotifier:
             },
         ]
 
-    def _build_degraded_blocks(self, incident: dict) -> list[dict]:
+    def _build_degraded_blocks(self, incident: dict[str, Any]) -> list[dict[str, Any]]:
         source = incident.get("source", "UNKNOWN")
         reason = incident.get("error", {}).get("Cause", "Unknown failure")
         raw_alert = json.dumps(incident.get("raw_event", {}), indent=2, ensure_ascii=False)
@@ -158,7 +187,7 @@ class SlackNotifier:
         ]
 
 
-def _mitre_display(incident: dict) -> str:
+def _mitre_display(incident: dict[str, Any]) -> str:
     value = (
         incident.get("mitre")
         or incident.get("mitre_attack")
@@ -173,7 +202,7 @@ def _mitre_display(incident: dict) -> str:
     return to_slack_mrkdwn(str(value))
 
 
-def _affected_resources(incident: dict) -> str:
+def _affected_resources(incident: dict[str, Any]) -> str:
     resources = incident.get("affected_resources") or incident.get("resources") or []
     if isinstance(resources, str):
         resources = [resources]

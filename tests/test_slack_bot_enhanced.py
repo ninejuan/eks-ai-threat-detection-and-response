@@ -1,9 +1,13 @@
 import json
+from urllib.parse import quote_plus
 
 from app.shared.config import Config
 from app.shared.dynamodb import IncidentStore
-from app.shared.slack_notifier import SlackNotifier
+from app.shared.slack_notifier import SlackNotifier, slack_api_call
 from app.slack_bot.commands import _dispatch_atdr
+from app.slack_bot.events import handle_events
+from app.slack_bot.home import build_home_view
+from app.slack_bot.interactions import handle_interactions
 
 
 def _body(result):
@@ -140,3 +144,153 @@ def test_incident_store_new_scan_methods(aws_mocks, dynamodb_table):
     assert store.get_by_status("open")[0]["incident_id"] == "inc"
     assert store.get_by_severity("P1")[0]["incident_id"] == "inc"
     assert store.get_stats(days=7)["total"] == 1
+
+
+def test_home_view_shows_soc_dashboard(aws_mocks, dynamodb_table):
+    dynamodb_table.scan.return_value = {
+        "Items": [
+            {
+                "incident_id": "inc-home",
+                "severity": "P1",
+                "status": "open",
+                "title": "Container escape",
+                "created_at": "2999-01-01T00:00:00Z",
+            }
+        ]
+    }
+
+    view = build_home_view(Config())
+
+    text = json.dumps(view, ensure_ascii=False)
+    assert view["type"] == "home"
+    assert "ATDR Security Operations Center" in text
+    assert "inc-home" in text
+    assert "View All Incidents" in text
+    assert "Generate Report" in text
+
+
+def test_app_home_opened_event_publishes_home(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        "app.slack_bot.events.publish_home", lambda user_id, config: calls.append((user_id, config.project))
+    )
+
+    result = handle_events(
+        json.dumps({"type": "event_callback", "event": {"type": "app_home_opened", "user": "U1"}}), Config()
+    )
+
+    assert result["statusCode"] == 200
+    assert calls == [("U1", "test-atdr")]
+
+
+def test_home_buttons_open_modals_and_post_oncall(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        "app.slack_bot.modals.slack_api_call",
+        lambda method, payload, config: calls.append((method, payload)) or {"ok": True},
+    )
+
+    payload = {
+        "type": "block_actions",
+        "trigger_id": "trig-1",
+        "user": {"id": "U1"},
+        "channel": {"id": "C1"},
+        "actions": [{"action_id": "view_all_incidents", "value": "all"}],
+    }
+    result = handle_interactions("payload=" + quote_plus(json.dumps(payload)), Config())
+
+    payload["actions"] = [{"action_id": "generate_report", "value": "report"}]
+    handle_interactions("payload=" + quote_plus(json.dumps(payload)), Config())
+    payload["actions"] = [{"action_id": "view_oncall", "value": "oncall"}]
+    handle_interactions("payload=" + quote_plus(json.dumps(payload)), Config())
+
+    assert result["statusCode"] == 200
+    assert calls[0][0] == "views.open"
+    assert calls[0][1]["trigger_id"] == "trig-1"
+    assert calls[0][1]["view"]["callback_id"] == "incident_filter_submit"
+    assert calls[1][1]["view"]["callback_id"] == "report_generation_submit"
+    assert calls[2][0] == "chat.postEphemeral"
+
+
+def test_view_submission_filters_incidents_to_ephemeral(monkeypatch, aws_mocks, dynamodb_table):
+    calls = []
+    monkeypatch.setattr(
+        "app.slack_bot.modals.slack_api_call",
+        lambda method, payload, config: calls.append((method, payload)) or {"ok": True},
+    )
+    dynamodb_table.scan.return_value = {
+        "Items": [
+            {"incident_id": "inc-p1", "severity": "P1", "status": "open", "created_at": "2026-05-06T01:00:00Z"},
+            {"incident_id": "inc-p3", "severity": "P3", "status": "closed", "created_at": "2026-05-06T01:00:00Z"},
+        ]
+    }
+    payload = {
+        "type": "view_submission",
+        "user": {"id": "U1"},
+        "view": {
+            "callback_id": "incident_filter_submit",
+            "private_metadata": json.dumps({"channel_id": "C1", "user_id": "U1"}),
+            "state": {
+                "values": {
+                    "severity_filter": {"severity": {"selected_option": {"value": "p1"}}},
+                    "status_filter": {"status": {"selected_option": {"value": "open"}}},
+                    "start_date": {"start": {"selected_date": "2026-05-01"}},
+                    "end_date": {"end": {"selected_date": "2026-05-31"}},
+                }
+            },
+        },
+    }
+
+    result = handle_interactions("payload=" + quote_plus(json.dumps(payload)), Config())
+
+    assert json.loads(result["body"])["response_action"] == "clear"
+    assert calls[0][0] == "chat.postEphemeral"
+    text = json.dumps(calls[0][1]["blocks"])
+    assert "inc-p1" in text
+    assert "inc-p3" not in text
+
+
+def test_shortcuts_open_status_and_ack_modals(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        "app.slack_bot.modals.slack_api_call",
+        lambda method, payload, config: calls.append((method, payload)) or {"ok": True},
+    )
+
+    status_payload = {"type": "shortcut", "callback_id": "atdr_view_status", "trigger_id": "ts", "user": {"id": "U1"}}
+    ack_payload = {"type": "shortcut", "callback_id": "atdr_ack_incident", "trigger_id": "ta", "user": {"id": "U1"}}
+    handle_interactions("payload=" + quote_plus(json.dumps(status_payload)), Config())
+    handle_interactions("payload=" + quote_plus(json.dumps(ack_payload)), Config())
+
+    assert calls[0][1]["view"]["callback_id"] == "status_view"
+    assert calls[1][1]["view"]["callback_id"] == "ack_incident_submit"
+
+
+def test_slack_api_call_uses_bot_token(monkeypatch):
+    captured = {}
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps({"ok": True}).encode()
+
+    def fake_urlopen(request, timeout):
+        captured["url"] = request.full_url
+        captured["headers"] = request.headers
+        captured["body"] = json.loads(request.data.decode())
+        return Response()
+
+    monkeypatch.setattr("app.shared.slack_notifier.get_secret", lambda secret_id: {"token": "xoxb-test"})
+    monkeypatch.setattr("app.shared.slack_notifier.urlopen", fake_urlopen)
+
+    result = slack_api_call("views.open", {"trigger_id": "t", "view": {"type": "modal"}}, Config())
+
+    assert result["ok"] is True
+    assert captured["url"] == "https://slack.com/api/views.open"
+    assert captured["headers"]["Authorization"] == "Bearer xoxb-test"
+    assert captured["body"]["trigger_id"] == "t"

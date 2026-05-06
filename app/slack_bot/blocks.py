@@ -374,6 +374,12 @@ def _incident_actions(incident_id: str) -> dict:
             },
             {
                 "type": "button",
+                "text": {"type": "plain_text", "text": "Details"},
+                "action_id": "open_incident_detail",
+                "value": incident_id,
+            },
+            {
+                "type": "button",
                 "text": {"type": "plain_text", "text": "Escalate"},
                 "action_id": "escalate_incident",
                 "value": incident_id,

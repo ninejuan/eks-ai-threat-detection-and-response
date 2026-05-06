@@ -4,6 +4,7 @@ import os
 
 from app.shared.config import Config
 from app.slack_bot.blocks import help_blocks, message_response_blocks, status_blocks
+from app.slack_bot.home import publish_home
 
 logger = logging.getLogger(__name__)
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
@@ -34,6 +35,12 @@ def _handle_event_callback(payload: dict, config: Config) -> dict:
         if event.get("subtype") == "bot_message" or event.get("bot_id"):
             return {"statusCode": 200, "body": "ok"}
         return _handle_message(event, config)
+
+    if event_type == "app_home_opened":
+        user_id = event.get("user", "")
+        if user_id:
+            publish_home(user_id, config)
+        return {"statusCode": 200, "body": "ok"}
 
     return {"statusCode": 200, "body": "ok"}
 
