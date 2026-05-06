@@ -16,10 +16,8 @@ Available remediation actions:
 2. scale_deployment: Scale a deployment to 0 replicas
 3. cordon_node: Prevent new pods from scheduling on a node
 4. drain_node: Evict all pods from a node
-5. delete_cluster_role_binding: Remove excessive RBAC permissions
-6. rotate_secret: Rotate a compromised secret
-7. block_ip: Add IP to deny list via CiliumNetworkPolicy
-8. checkpoint_pod: Create container checkpoint before isolation (for forensics)
+5. checkpoint_pod: Capture pod forensics evidence before isolation (for forensics)
+6. capture_hubble_flows: Capture Cilium/Hubble evidence for the compromised pod before isolation
 
 Output a JSON object with:
 - recommended_actions: ordered list of action objects, each with:

@@ -81,18 +81,31 @@ REMEDIATION_TOOLS = [
                 "namespace": {"type": "string"},
                 "replicas": {"type": "integer"},
             },
-            "required": ["deployment_name", "namespace"],
+            "required": ["deployment_name", "namespace", "replicas"],
         },
     },
     {
         "name": "checkpoint_pod",
-        "description": "Create a container checkpoint and export to S3",
+        "description": "Capture pod forensics evidence and export it to S3 before isolation",
         "input_schema": {
             "type": "object",
             "properties": {
                 "pod_name": {"type": "string"},
                 "namespace": {"type": "string"},
                 "container_name": {"type": "string"},
+                "s3_destination": {"type": "string"},
+            },
+            "required": ["pod_name", "namespace"],
+        },
+    },
+    {
+        "name": "capture_hubble_flows",
+        "description": "Capture Cilium/Hubble flow evidence for a pod and export it to S3",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "pod_name": {"type": "string"},
+                "namespace": {"type": "string"},
                 "s3_destination": {"type": "string"},
             },
             "required": ["pod_name", "namespace"],
