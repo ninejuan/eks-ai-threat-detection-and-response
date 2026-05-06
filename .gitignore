@@ -45,3 +45,4 @@ __pycache__/
 build/
 .terraform.lock.hcl
 slack/manifest.json
+*.zip

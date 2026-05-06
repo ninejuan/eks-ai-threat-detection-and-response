@@ -1,5 +1,35 @@
 # ATDR Project Conventions
 
+## Non-Negotiable Project Instructions
+
+These instructions override convenience, personal preference, and generic best practices. If a future agent or contributor is about to choose a different architecture, they must stop, re-read this section, and implement the project-specific requirement instead.
+
+- Follow `refs/eksai1.jpg` and `refs/eksai2.jpg` as the source-of-truth architecture diagrams. Do not replace their architecture with a simpler local interpretation.
+- Use `../k8s-noisy-neighbor-control` as the reference implementation for operational patterns before inventing new deployment or Makefile behavior.
+- Remediation must use EKS MCP. Lambda remediation code must not call the Kubernetes API directly, must not manage kubeconfig directly, and must not shell out to `kubectl` for remediation. The allowed path is: Remediation Agent → MCP client/token → EKS MCP server → Kubernetes API.
+- The MCP auth token secret is required. Do not remove it as "unused"; wire it into both Lambda-side clients and the in-cluster MCP server authentication path.
+- Infrastructure mutation must go through `make infra-up`, `make infra-down`, `make platform-up`, or `make platform-down`. Do not run `terraform apply`, `terraform destroy`, direct AWS mutation commands, or ad-hoc `kubectl apply` for project infrastructure outside those Make targets.
+- No placeholders in implementation paths. `TODO`, fake ARNs/account IDs, sample domains, stub handlers, and mock-only code are unacceptable unless they are clearly documentation examples and cannot run in production.
+- The project domain is `atdr.juany.dev`. Do not use `atdr.io` or other substitute domains.
+- EKS identity must use EKS Pod Identity, not IRSA. Do not add OIDC-provider/IRSA-based service account role annotations unless explicitly documenting legacy alternatives.
+- `gp3` must be the default storage class for persistent Kubernetes storage.
+- EKS add-on updates must preserve user-managed config with `resolve_conflicts_on_update = "PRESERVE"`. Do not use `OVERWRITE`.
+- Do not add `Co-authored-by`, Sisyphus branding, or any other agent attribution to commits unless the user explicitly requests it.
+- Do not commit generated deployment artifacts such as Lambda zip bundles, build outputs, or other reproducible archives unless the user explicitly requests tracked artifacts.
+- Do not modify `Makefile` or other operator-facing entrypoints merely to run one-off restart, rollout, debug, or recovery commands needed for the current session. Run those commands directly. Only change user-facing workflows when the change is a durable improvement for future operators.
+
+## Instruction-Drift Defense
+
+Before any non-trivial edit, run this mental checklist and verify with repository search when relevant:
+
+1. Does the change bypass EKS MCP, Slack approval, Step Functions, Pod Identity, gp3, or the reference diagrams?
+2. Does it remove a secret, Make target, Terraform resource, or Kubernetes manifest because it looks unused without first proving the intended data path?
+3. Does it introduce placeholders, hardcoded account IDs/regions/domains, direct `kubectl`, direct Kubernetes clients from Lambda, or IRSA/OIDC drift?
+4. Does it mutate infrastructure outside the sanctioned Make targets?
+5. Does it add commit attribution the user did not ask for, commit generated artifacts, or turn Makefile into a one-off command wrapper for the current debugging session?
+
+If the answer to any item is yes, do not proceed with that approach. Fix the design so it satisfies the explicit project constraints first, then implement.
+
 ## Directory Structure
 
 ```
