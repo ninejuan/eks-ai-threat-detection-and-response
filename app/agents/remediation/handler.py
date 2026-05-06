@@ -131,6 +131,24 @@ REMEDIATION_TOOLS = [
         },
     },
     {
+        "name": "collect_audit_events",
+        "description": (
+            "Run a CloudWatch Logs Insights query against the EKS audit log to retrieve all API "
+            "operations involving the given pod (create, exec, delete, etc.). Helps attribute who "
+            "made changes and identify lateral RBAC abuse."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "pod_name": {"type": "string"},
+                "namespace": {"type": "string"},
+                "since_minutes": {"type": "integer"},
+                "max_events": {"type": "integer"},
+            },
+            "required": ["pod_name", "namespace"],
+        },
+    },
+    {
         "name": "cordon_node",
         "description": "Mark a node as unschedulable",
         "input_schema": {

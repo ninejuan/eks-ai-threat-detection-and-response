@@ -352,7 +352,9 @@ def _capture_hubble_flows(pod_namespace: str, pod_name: str, since_minutes: int,
 
 
 DYNAMODB = boto3.resource("dynamodb", region_name=os.environ.get("AWS_REGION"))
+LOGS = boto3.client("logs", region_name=os.environ.get("AWS_REGION"))
 TETRAGON_EVENTS_TABLE = os.environ.get("TETRAGON_EVENTS_TABLE", "")
+EKS_AUDIT_LOG_GROUP = os.environ.get("EKS_AUDIT_LOG_GROUP", "")
 
 
 def collect_tetragon_timeline(
@@ -440,6 +442,124 @@ def collect_tetragon_timeline(
     )
 
 
+_AUDIT_QUERY_TEMPLATE = (
+    "fields @timestamp, @message, verb, objectRef.name, objectRef.namespace, "
+    "objectRef.resource, user.username, sourceIPs.0, responseStatus.code\n"
+    "| filter @logStream like /kube-apiserver-audit/\n"
+    "| filter objectRef.namespace = '{namespace}' and objectRef.name = '{pod_name}'\n"
+    "| sort @timestamp asc\n"
+    "| limit {limit}"
+)
+
+
+def collect_audit_events(
+    pod_name: str,
+    namespace: str,
+    since_minutes: int = 60,
+    max_events: int = 500,
+    incident_id: str | None = None,
+    poll_timeout_seconds: int = 120,
+) -> dict:
+    if not EKS_AUDIT_LOG_GROUP:
+        return _failure("collect_audit_events", "EKS_AUDIT_LOG_GROUP env not configured")
+
+    safe_ns = _sanitize_audit_filter_value(namespace)
+    safe_pod = _sanitize_audit_filter_value(pod_name)
+    if not safe_ns or not safe_pod:
+        return _failure("collect_audit_events", "namespace/pod_name contain unsafe characters")
+
+    now = datetime.now(tz=UTC)
+    since = now - timedelta(minutes=int(since_minutes))
+
+    start_response = LOGS.start_query(
+        logGroupName=EKS_AUDIT_LOG_GROUP,
+        startTime=int(since.timestamp()),
+        endTime=int(now.timestamp()),
+        queryString=_AUDIT_QUERY_TEMPLATE.format(
+            namespace=safe_ns,
+            pod_name=safe_pod,
+            limit=min(max(1, int(max_events)), 10000),
+        ),
+    )
+    query_id = start_response["queryId"]
+
+    final_status, results, statistics = _poll_logs_insights(query_id, poll_timeout_seconds)
+    if final_status not in {"Complete"}:
+        return _failure(
+            "collect_audit_events",
+            f"Logs Insights query ended with status {final_status}",
+        )
+
+    events = [{field["field"]: field["value"] for field in row if field.get("field") != "@ptr"} for row in results]
+
+    payload = {
+        "captured_at": now.isoformat(),
+        "kind": "eks_audit_events",
+        "incident_id": _sanitize_incident_id(incident_id),
+        "namespace": namespace,
+        "pod_name": pod_name,
+        "log_group": EKS_AUDIT_LOG_GROUP,
+        "since": since.isoformat(),
+        "until": now.isoformat(),
+        "event_count": len(events),
+        "events": events,
+        "statistics": statistics,
+    }
+
+    evidence: dict | None = None
+    if incident_id:
+        bucket, key = _forensics_destination("audit-events", pod_name, incident_id)
+        evidence = _put_forensics_json(
+            bucket,
+            key,
+            payload,
+            incident_id=incident_id,
+            kind="eks_audit_events",
+        )
+
+    return _success(
+        "collect_audit_events",
+        pod=pod_name,
+        namespace=namespace,
+        since=since.isoformat(),
+        event_count=len(events),
+        statistics=statistics,
+        evidence_uri=(evidence or {}).get("uri"),
+        evidence_sha256=(evidence or {}).get("sha256"),
+    )
+
+
+_AUDIT_FILTER_SAFE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,252}$")
+
+
+def _sanitize_audit_filter_value(value: str) -> str:
+    if value is None:
+        return ""
+    text = str(value)
+    return text if _AUDIT_FILTER_SAFE.match(text) else ""
+
+
+def _poll_logs_insights(query_id: str, timeout_seconds: int) -> tuple[str, list[list[dict]], dict]:
+    import time as _time
+
+    deadline = _time.time() + max(1, int(timeout_seconds))
+    backoff = 0.5
+    status = "Running"
+    while _time.time() < deadline:
+        resp = LOGS.get_query_results(queryId=query_id)
+        status = resp.get("status", "Unknown")
+        if status in {"Complete", "Failed", "Cancelled", "Timeout", "Unknown"}:
+            return status, resp.get("results", []), resp.get("statistics", {})
+        _time.sleep(backoff)
+        backoff = min(backoff * 1.5, 5.0)
+
+    try:
+        LOGS.stop_query(queryId=query_id)
+    except Exception as error:
+        logger.warning("Failed to stop query %s after timeout: %s", query_id, error)
+    return "Timeout", [], {}
+
+
 TOOLS = {
     "label_pod": label_pod,
     "delete_pod": delete_pod,
@@ -450,6 +570,7 @@ TOOLS = {
     "checkpoint_pod": checkpoint_pod,
     "capture_hubble_flows": capture_hubble_flows,
     "collect_tetragon_timeline": collect_tetragon_timeline,
+    "collect_audit_events": collect_audit_events,
 }
 
 

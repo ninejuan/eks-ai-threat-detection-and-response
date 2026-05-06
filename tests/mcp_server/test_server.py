@@ -12,6 +12,7 @@ def server_module(monkeypatch):
     monkeypatch.setenv("MCP_AUTH_TOKEN", "test-token")
     monkeypatch.setenv("FORENSICS_BUCKET", "atdr-forensics-test")
     monkeypatch.setenv("TETRAGON_EVENTS_TABLE", "atdr-tetragon-events-test")
+    monkeypatch.setenv("EKS_AUDIT_LOG_GROUP", "/aws/eks/atdr-demo/cluster")
     sys.modules.pop("mcp_server.server", None)
 
     with (
@@ -362,3 +363,135 @@ def test_collect_tetragon_timeline_reports_missing_env(server_module, monkeypatc
     result = server_module.collect_tetragon_timeline(pod_uid="uid-x")
     assert result["status"] == "failed"
     assert "TETRAGON_EVENTS_TABLE" in result["error"]
+
+
+def test_collect_audit_events_returns_normalized_rows(server_module, monkeypatch):
+    start_calls = []
+
+    class FakeLogs:
+        def start_query(self, **kwargs):
+            start_calls.append(kwargs)
+            return {"queryId": "q-123"}
+
+        def get_query_results(self, **_kwargs):
+            return {
+                "status": "Complete",
+                "results": [
+                    [
+                        {"field": "@timestamp", "value": "2026-05-06 19:16:03.000"},
+                        {"field": "verb", "value": "create"},
+                        {"field": "objectRef.namespace", "value": "atdr-test"},
+                        {"field": "objectRef.name", "value": "attacker"},
+                        {"field": "user.username", "value": "system:admin"},
+                        {"field": "@ptr", "value": "ignored"},
+                    ],
+                ],
+                "statistics": {"recordsMatched": 1.0, "recordsScanned": 10.0, "bytesScanned": 1024.0},
+            }
+
+        def stop_query(self, **_kwargs):
+            pass
+
+    monkeypatch.setattr(server_module, "LOGS", FakeLogs())
+
+    result = server_module.collect_audit_events(pod_name="attacker", namespace="atdr-test", since_minutes=15)
+
+    assert result["status"] == "success"
+    assert result["event_count"] == 1
+    assert result["statistics"]["recordsMatched"] == 1.0
+    assert result["evidence_uri"] is None
+
+    assert start_calls[0]["logGroupName"] == "/aws/eks/atdr-demo/cluster"
+    assert "atdr-test" in start_calls[0]["queryString"]
+    assert "attacker" in start_calls[0]["queryString"]
+    assert start_calls[0]["endTime"] > start_calls[0]["startTime"]
+
+
+def test_collect_audit_events_writes_forensics_when_incident_id(server_module, monkeypatch):
+    class FakeLogs:
+        def start_query(self, **_kwargs):
+            return {"queryId": "q-456"}
+
+        def get_query_results(self, **_kwargs):
+            return {
+                "status": "Complete",
+                "results": [
+                    [
+                        {"field": "@timestamp", "value": "2026-05-06 19:16:03.000"},
+                        {"field": "verb", "value": "exec"},
+                        {"field": "objectRef.namespace", "value": "atdr-test"},
+                        {"field": "objectRef.name", "value": "attacker"},
+                    ],
+                ],
+                "statistics": {},
+            }
+
+        def stop_query(self, **_kwargs):
+            pass
+
+    put_calls = []
+
+    class S3Client:
+        def put_object(self, **kwargs):
+            put_calls.append(kwargs)
+
+    monkeypatch.setattr(server_module, "LOGS", FakeLogs())
+    monkeypatch.setattr(server_module, "S3", S3Client())
+
+    result = server_module.collect_audit_events(
+        pod_name="attacker",
+        namespace="atdr-test",
+        since_minutes=15,
+        incident_id="inc-2026-aud",
+    )
+
+    assert result["status"] == "success"
+    assert result["evidence_uri"].startswith("s3://atdr-forensics-test/incidents/inc-2026-aud/audit-events/attacker/")
+    assert "evidence_sha256" in result
+
+    evidence_call = next(call for call in put_calls if "/evidence.json" in call["Key"])
+    payload = json.loads(evidence_call["Body"].decode("utf-8"))
+    assert payload["kind"] == "eks_audit_events"
+    assert payload["incident_id"] == "inc-2026-aud"
+    assert payload["events"][0]["objectRef.name"] == "attacker"
+
+
+def test_collect_audit_events_rejects_unsafe_namespace(server_module):
+    result = server_module.collect_audit_events(pod_name="attacker", namespace="atdr'; DROP /*")
+    assert result["status"] == "failed"
+    assert "unsafe characters" in result["error"]
+
+
+def test_collect_audit_events_reports_missing_env(server_module, monkeypatch):
+    monkeypatch.setattr(server_module, "EKS_AUDIT_LOG_GROUP", "")
+    result = server_module.collect_audit_events(pod_name="attacker", namespace="atdr-test")
+    assert result["status"] == "failed"
+    assert "EKS_AUDIT_LOG_GROUP" in result["error"]
+
+
+def test_collect_audit_events_stops_on_timeout(server_module, monkeypatch):
+    class FakeLogs:
+        def __init__(self):
+            self.stopped = []
+
+        def start_query(self, **_kwargs):
+            return {"queryId": "q-timeout"}
+
+        def get_query_results(self, **_kwargs):
+            return {"status": "Running", "results": [], "statistics": {}}
+
+        def stop_query(self, **kwargs):
+            self.stopped.append(kwargs)
+
+    fake = FakeLogs()
+    monkeypatch.setattr(server_module, "LOGS", fake)
+
+    result = server_module.collect_audit_events(
+        pod_name="attacker",
+        namespace="atdr-test",
+        poll_timeout_seconds=0,
+    )
+
+    assert result["status"] == "failed"
+    assert "Timeout" in result["error"]
+    assert fake.stopped == [{"queryId": "q-timeout"}]

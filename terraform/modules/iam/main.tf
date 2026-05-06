@@ -103,6 +103,17 @@ resource "aws_iam_role_policy" "mcp_server_forensics" {
           "arn:aws:dynamodb:${var.region}:${local.account_id}:table/${var.project}-tetragon-events/index/*",
         ]
       },
+      {
+        Sid    = "QueryEksAuditLogs"
+        Effect = "Allow"
+        Action = [
+          "logs:StartQuery",
+          "logs:GetQueryResults",
+          "logs:StopQuery",
+          "logs:DescribeLogGroups",
+        ]
+        Resource = "arn:aws:logs:${var.region}:${local.account_id}:log-group:/aws/eks/*:*"
+      },
     ]
   })
 }

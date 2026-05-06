@@ -92,6 +92,8 @@ spec:
               value: ${FORENSICS_BUCKET}
             - name: TETRAGON_EVENTS_TABLE
               value: ${TETRAGON_EVENTS_TABLE}
+            - name: EKS_AUDIT_LOG_GROUP
+              value: ${EKS_AUDIT_LOG_GROUP}
             - name: AWS_REGION
               value: ${AWS_REGION}
           readinessProbe:
