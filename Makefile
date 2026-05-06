@@ -410,11 +410,13 @@ build-lambdas:
 		python3 -c 'from pathlib import Path; import zipfile; root=Path("."); out=Path("../../../$(LAMBDA_MOD)/approval_notifier.zip"); z=zipfile.ZipFile(out,"w",zipfile.ZIP_DEFLATED); [z.write(p,p.relative_to(root)) for p in root.rglob("*") if p.is_file() and "__pycache__" not in p.parts]; z.close()' && \
 		cd ../../..
 	@mkdir -p build/lambdas/slack_bot && \
-		cp app/slack_bot/*.py build/lambdas/slack_bot/ && \
+		cp app/slack_bot/handler.py build/lambdas/slack_bot/ && \
+		mkdir -p build/lambdas/slack_bot/app/slack_bot && \
+		cp app/slack_bot/*.py build/lambdas/slack_bot/app/slack_bot/ && \
 		cp -r app/shared build/lambdas/slack_bot/app_shared && \
 		cd build/lambdas/slack_bot && \
 		mkdir -p app/shared && mv app_shared/* app/shared/ && rmdir app_shared && \
-		touch app/__init__.py app/shared/__init__.py && \
+		touch app/__init__.py app/shared/__init__.py app/slack_bot/__init__.py && \
 		python3 -c 'from pathlib import Path; import zipfile; root=Path("."); out=Path("../../../terraform/modules/slack/slack_bot.zip"); z=zipfile.ZipFile(out,"w",zipfile.ZIP_DEFLATED); [z.write(p,p.relative_to(root)) for p in root.rglob("*") if p.is_file() and "__pycache__" not in p.parts]; z.close()' && \
 		cd ../../..
 	@echo "Lambdas packaged."

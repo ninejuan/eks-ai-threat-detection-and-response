@@ -47,3 +47,9 @@ class IncidentStore:
     def get_incident(self, incident_id: str) -> dict[str, Any] | None:
         response = self._table.get_item(Key={"incident_id": incident_id})
         return response.get("Item")
+
+    def recent(self, limit: int = 10) -> list[dict[str, Any]]:
+        response = self._table.scan(Limit=limit)
+        items = response.get("Items", [])
+        items.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+        return items[:limit]

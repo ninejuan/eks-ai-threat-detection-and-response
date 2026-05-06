@@ -60,7 +60,12 @@ def test_events_url_verification_returns_challenge(aws_mocks, context):
 
 
 def test_events_non_verification_returns_ok(aws_mocks, context):
-    body = json.dumps({"type": "event_callback", "event": {"type": "app_mention"}})
+    body = json.dumps(
+        {
+            "type": "event_callback",
+            "event": {"type": "app_mention", "text": "hello", "channel": "C123", "bot_id": "B123"},
+        }
+    )
 
     result = handler.lambda_handler(_signed_event("/slack/events", body), context)
 
@@ -86,7 +91,9 @@ def test_interactions_approve_action_writes_audit(aws_mocks, dynamodb_table, con
     result = handler.lambda_handler(_signed_event("/slack/interactions", body), context)
 
     assert result["statusCode"] == 200
-    assert json.loads(result["body"])["text"] == "Remediation approved by @alice"
+    response_body = json.loads(result["body"])
+    assert "blocks" in response_body
+    assert any("approved" in json.dumps(block) for block in response_body["blocks"])
     item = dynamodb_table.put_item.call_args.kwargs["Item"]
     assert item["incident_id"] == "inc-1"
     assert item["decision"] == "approved"
@@ -102,22 +109,44 @@ def test_interactions_reject_action_writes_audit(aws_mocks, dynamodb_table, cont
 
     result = handler.lambda_handler(_signed_event("/slack/interactions", body), context)
 
-    assert json.loads(result["body"])["text"] == "Remediation rejected by @bob"
+    response_body = json.loads(result["body"])
+    assert any("rejected" in json.dumps(block) for block in response_body["blocks"])
     assert dynamodb_table.put_item.call_args.kwargs["Item"]["decision"] == "rejected"
 
 
-def test_commands_status_help_and_unknown(aws_mocks, context):
-    status = handler.lambda_handler(_signed_event("/slack/commands", "command=%2Fatdr&text=status"), context)
-    help_result = handler.lambda_handler(_signed_event("/slack/commands", "command=%2Fatdr&text=help"), context)
-    unknown = handler.lambda_handler(_signed_event("/slack/commands", "command=%2Fother&text=status"), context)
+def test_commands_status_returns_blocks(aws_mocks, context):
+    result = handler.lambda_handler(_signed_event("/slack/commands", "command=%2Fatdr&text=status"), context)
 
-    assert json.loads(status["body"])["text"] == "ATDR is operational."
-    assert "ATDR Commands" in json.loads(help_result["body"])["text"]
-    assert json.loads(unknown["body"])["text"] == "Unknown command: /other"
+    response_body = json.loads(result["body"])
+    assert "blocks" in response_body
+    blocks_text = json.dumps(response_body["blocks"])
+    assert "ATDR System Status" in blocks_text
+    assert "atdr-demo" in blocks_text
 
 
-def test_lambda_handler_decodes_base64_body_after_verification(aws_mocks, context):
-    plain_body = json.dumps({"type": "event_callback"})
+def test_commands_help_returns_blocks(aws_mocks, context):
+    result = handler.lambda_handler(_signed_event("/slack/commands", "command=%2Fatdr&text=help"), context)
+
+    response_body = json.loads(result["body"])
+    assert "blocks" in response_body
+    blocks_text = json.dumps(response_body["blocks"])
+    assert "ATDR Bot" in blocks_text
+    assert "/atdr status" in blocks_text
+
+
+def test_commands_unknown_returns_error_blocks(aws_mocks, context):
+    result = handler.lambda_handler(_signed_event("/slack/commands", "command=%2Fatdr&text=foobar"), context)
+
+    response_body = json.loads(result["body"])
+    assert "blocks" in response_body
+    blocks_text = json.dumps(response_body["blocks"])
+    assert "foobar" in blocks_text
+
+
+def test_lambda_handler_decodes_base64_body(aws_mocks, context):
+    plain_body = json.dumps(
+        {"type": "event_callback", "event": {"type": "message", "text": "hi", "channel": "C1", "bot_id": "B1"}}
+    )
     encoded_body = base64.b64encode(plain_body.encode()).decode()
     timestamp = str(int(time.time()))
     event = {

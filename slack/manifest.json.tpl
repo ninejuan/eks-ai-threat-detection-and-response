@@ -21,8 +21,12 @@
   "oauth_config": {
     "scopes": {
       "bot": [
+        "app_mentions:read",
         "chat:write",
         "commands",
+        "im:history",
+        "im:read",
+        "im:write",
         "incoming-webhook",
         "channels:history"
       ]
@@ -32,7 +36,9 @@
     "event_subscriptions": {
       "request_url": "${SLACK_API_URL}/slack/events",
       "bot_events": [
-        "message.channels"
+        "app_mention",
+        "message.channels",
+        "message.im"
       ]
     },
     "interactivity": {
