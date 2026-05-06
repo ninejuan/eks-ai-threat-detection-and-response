@@ -20,6 +20,7 @@ ALLOWED_TOOLS = {
     "capture_hubble_flows",
     "collect_tetragon_timeline",
     "collect_audit_events",
+    "collect_live_pod_forensics",
 }
 
 _warmed_up = False
@@ -67,7 +68,13 @@ def _warmup(server_url: str) -> None:
 
 
 INCIDENT_AWARE_TOOLS = frozenset(
-    {"checkpoint_pod", "capture_hubble_flows", "collect_tetragon_timeline", "collect_audit_events"}
+    {
+        "checkpoint_pod",
+        "capture_hubble_flows",
+        "collect_tetragon_timeline",
+        "collect_audit_events",
+        "collect_live_pod_forensics",
+    }
 )
 
 

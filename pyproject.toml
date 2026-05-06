@@ -51,5 +51,5 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["S101", "S105", "S107", "ARG001", "ARG005", "PLR2004", "SLF001"]
+"tests/**" = ["S101", "S105", "S107", "ARG001", "ARG002", "ARG005", "PLR2004", "SLF001"]
 "app/**/handler.py" = ["ARG001"]

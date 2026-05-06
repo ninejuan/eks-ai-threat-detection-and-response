@@ -214,11 +214,11 @@ def test_capture_hubble_flows_records_relay_failure(server_module, monkeypatch):
     )
 
     class CoreApi:
-        def read_namespaced_pod(self, name, namespace):  # noqa: ARG002
+        def read_namespaced_pod(self, name, namespace):
             return pod
 
     class CustomApi:
-        def list_namespaced_custom_object(self, **kwargs):  # noqa: ARG002
+        def list_namespaced_custom_object(self, **kwargs):
             return {"items": []}
 
     put_calls = []
@@ -495,3 +495,146 @@ def test_collect_audit_events_stops_on_timeout(server_module, monkeypatch):
     assert result["status"] == "failed"
     assert "Timeout" in result["error"]
     assert fake.stopped == [{"queryId": "q-timeout"}]
+
+
+def test_collect_live_pod_forensics_injects_ephemeral_container(server_module, monkeypatch):
+    pod_reads = {"count": 0}
+
+    terminated_state = SimpleNamespace(
+        state=SimpleNamespace(terminated=SimpleNamespace(reason="Completed"), running=None)
+    )
+
+    running_state = SimpleNamespace(state=SimpleNamespace(terminated=None, running=SimpleNamespace(started_at=None)))
+
+    def _pod_with_status(include_terminated: bool):
+        statuses = [
+            SimpleNamespace(
+                name="atdr-fx-abc", **(terminated_state.__dict__ if include_terminated else running_state.__dict__)
+            )
+        ]
+        return SimpleNamespace(
+            spec=SimpleNamespace(containers=[SimpleNamespace(name="app")]),
+            status=SimpleNamespace(ephemeral_container_statuses=statuses),
+        )
+
+    patch_calls = []
+
+    class CoreApi:
+        def read_namespaced_pod(self, name, namespace):
+            pod_reads["count"] += 1
+            if pod_reads["count"] == 1:
+                return SimpleNamespace(
+                    spec=SimpleNamespace(containers=[SimpleNamespace(name="app")]),
+                    status=SimpleNamespace(ephemeral_container_statuses=[]),
+                )
+            return _pod_with_status(include_terminated=True)
+
+        def patch_namespaced_pod_ephemeralcontainers(self, name, namespace, body, _preload_content):
+            patch_calls.append({"name": name, "namespace": namespace, "body": body})
+
+        def read_namespaced_pod_log(self, name, namespace, container):
+            return f"stdout of {container}"
+
+    monkeypatch.setattr(server_module, "CORE", CoreApi())
+    monkeypatch.setattr(server_module, "_hex_suffix", lambda: "abc")
+
+    put_calls = []
+
+    class S3Client:
+        def put_object(self, **kwargs):
+            put_calls.append(kwargs)
+
+    monkeypatch.setattr(server_module, "S3", S3Client())
+
+    result = server_module.collect_live_pod_forensics(
+        pod_name="attacker",
+        namespace="atdr-test",
+        profile="process_snapshot",
+        incident_id="inc-2026-live",
+    )
+
+    assert result["status"] == "success"
+    assert result["profile"] == "process_snapshot"
+    assert result["debug_container_name"] == "atdr-fx-abc"
+    assert result["terminated"] is True
+    assert result["exit_reason"] == "Completed"
+    assert result["evidence_uri"].startswith(
+        "s3://atdr-forensics-test/incidents/inc-2026-live/live-forensics/process_snapshot/attacker/"
+    )
+
+    assert patch_calls[0]["name"] == "attacker"
+    ephemeral = patch_calls[0]["body"]["spec"]["ephemeralContainers"][0]
+    assert ephemeral["targetContainerName"] == "app"
+    assert ephemeral["command"][0] == "sh"
+    assert ephemeral["securityContext"]["allowPrivilegeEscalation"] is False
+
+    evidence_call = next(call for call in put_calls if "/evidence.json" in call["Key"])
+    payload = json.loads(evidence_call["Body"].decode("utf-8"))
+    assert payload["kind"] == "live_pod_forensics"
+    assert payload["profile"] == "process_snapshot"
+    assert payload["output"].startswith("stdout of atdr-fx-abc")
+    assert payload["terminated"] is True
+
+
+def test_collect_live_pod_forensics_rejects_unknown_profile(server_module, monkeypatch):
+    class CoreApi:
+        def read_namespaced_pod(self, name, namespace):
+            return SimpleNamespace(
+                spec=SimpleNamespace(containers=[SimpleNamespace(name="app")]),
+                status=SimpleNamespace(ephemeral_container_statuses=[]),
+            )
+
+    monkeypatch.setattr(server_module, "CORE", CoreApi())
+    result = server_module.collect_live_pod_forensics(
+        pod_name="attacker",
+        namespace="atdr-test",
+        profile="rce_shell",
+    )
+    assert result["status"] == "failed"
+    assert "unknown profile" in result["error"]
+
+
+def test_collect_live_pod_forensics_rejects_invalid_pod_name(server_module):
+    result = server_module.collect_live_pod_forensics(
+        pod_name="attacker; rm -rf /",
+        namespace="atdr-test",
+        profile="process_snapshot",
+    )
+    assert result["status"] == "failed"
+    assert "invalid K8s characters" in result["error"]
+
+
+def test_collect_live_pod_forensics_reports_watchdog_timeout(server_module, monkeypatch):
+    class CoreApi:
+        def read_namespaced_pod(self, name, namespace):
+            return SimpleNamespace(
+                spec=SimpleNamespace(containers=[SimpleNamespace(name="app")]),
+                status=SimpleNamespace(
+                    ephemeral_container_statuses=[
+                        SimpleNamespace(
+                            name="atdr-fx-abc",
+                            state=SimpleNamespace(terminated=None, running=SimpleNamespace(started_at=None)),
+                        )
+                    ]
+                ),
+            )
+
+        def patch_namespaced_pod_ephemeralcontainers(self, name, namespace, body, _preload_content):
+            pass
+
+        def read_namespaced_pod_log(self, name, namespace, container):
+            return ""
+
+    monkeypatch.setattr(server_module, "CORE", CoreApi())
+    monkeypatch.setattr(server_module, "_hex_suffix", lambda: "abc")
+
+    result = server_module.collect_live_pod_forensics(
+        pod_name="attacker",
+        namespace="atdr-test",
+        profile="network_snapshot",
+        timeout_seconds=5,
+    )
+
+    assert result["status"] == "success"
+    assert result["terminated"] is False
+    assert result["exit_reason"] == "watchdog_timeout"

@@ -149,6 +149,34 @@ REMEDIATION_TOOLS = [
         },
     },
     {
+        "name": "collect_live_pod_forensics",
+        "description": (
+            "Inject a short-lived debug container into the target pod (via Kubernetes ephemeral "
+            "containers) and run a read-only forensic profile. Available profiles: "
+            "'process_snapshot', 'network_snapshot', 'filesystem_triage', 'env_redacted'. "
+            "The debug image and commands are owned by the MCP server; do not attempt to pass "
+            "arbitrary shell commands."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "pod_name": {"type": "string"},
+                "namespace": {"type": "string"},
+                "profile": {
+                    "type": "string",
+                    "enum": [
+                        "process_snapshot",
+                        "network_snapshot",
+                        "filesystem_triage",
+                        "env_redacted",
+                    ],
+                },
+                "target_container": {"type": "string"},
+            },
+            "required": ["pod_name", "namespace", "profile"],
+        },
+    },
+    {
         "name": "cordon_node",
         "description": "Mark a node as unschedulable",
         "input_schema": {

@@ -560,6 +560,205 @@ def _poll_logs_insights(query_id: str, timeout_seconds: int) -> tuple[str, list[
     return "Timeout", [], {}
 
 
+LIVE_FORENSICS_PROFILES: dict[str, list[str]] = {
+    "process_snapshot": [
+        "sh",
+        "-c",
+        "ps auxf 2>/dev/null; echo ---; pstree -p 2>/dev/null; "
+        "echo ---; ls -la /proc/1/fd 2>/dev/null; echo ---; cat /proc/1/status 2>/dev/null",
+    ],
+    "network_snapshot": [
+        "sh",
+        "-c",
+        "ss -tunap 2>/dev/null; echo ---; ip route 2>/dev/null; "
+        "echo ---; ip addr 2>/dev/null; echo ---; cat /proc/net/tcp 2>/dev/null | head -200",
+    ],
+    "filesystem_triage": [
+        "sh",
+        "-c",
+        "ls -la / 2>/dev/null; echo ---; ls -la /tmp 2>/dev/null; "
+        "echo ---; find /tmp -maxdepth 3 -type f -newer /etc/passwd 2>/dev/null | head -100; "
+        "echo ---; find / -maxdepth 3 -perm -4000 -type f 2>/dev/null | head -50",
+    ],
+    "env_redacted": [
+        "sh",
+        "-c",
+        "env 2>/dev/null | awk -F= 'BEGIN{IGNORECASE=1} "
+        "{ key=$1; val=$2; if (key ~ /TOKEN|SECRET|PASSWORD|KEY|AUTH|CREDENTIAL/) "
+        'print key"=[REDACTED]"; else print key"="val }\'',
+    ],
+}
+
+LIVE_FORENSICS_IMAGE = os.environ.get("LIVE_FORENSICS_IMAGE", "busybox:1.37")
+LIVE_FORENSICS_MAX_SECONDS = int(os.environ.get("LIVE_FORENSICS_MAX_SECONDS", "30"))
+
+_K8S_DNS1123 = re.compile(r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$")
+
+
+def _sanitize_k8s_dns_name(value: str) -> str:
+    text = (value or "").lower()
+    if not text or len(text) > 253 or not _K8S_DNS1123.match(text):
+        return ""
+    return text
+
+
+def collect_live_pod_forensics(
+    pod_name: str,
+    namespace: str,
+    profile: str = "process_snapshot",
+    target_container: str | None = None,
+    timeout_seconds: int | None = None,
+    incident_id: str | None = None,
+) -> dict:
+    validation_error = _validate_live_forensics_inputs(pod_name, namespace, profile)
+    if validation_error:
+        return _failure("collect_live_pod_forensics", validation_error)
+
+    safe_pod = _sanitize_k8s_dns_name(pod_name)
+    safe_ns = _sanitize_k8s_dns_name(namespace)
+
+    try:
+        pod = CORE.read_namespaced_pod(name=safe_pod, namespace=safe_ns)
+    except ApiException as error:
+        return _failure("collect_live_pod_forensics", f"read_pod_failed: {error.reason}")
+
+    selected_target = target_container or (pod.spec.containers[0].name if pod.spec.containers else "")
+    if not selected_target:
+        return _failure("collect_live_pod_forensics", "pod has no containers to target")
+
+    debug_name = f"atdr-fx-{_hex_suffix()}"[:63]
+    command = list(LIVE_FORENSICS_PROFILES[profile])
+    max_secs = max(5, min(int(timeout_seconds or LIVE_FORENSICS_MAX_SECONDS), 120))
+
+    inject_error = _inject_ephemeral_container(safe_pod, safe_ns, debug_name, command, selected_target)
+    if inject_error:
+        return _failure("collect_live_pod_forensics", inject_error)
+
+    terminated, reason = _wait_for_ephemeral_container_exit(safe_pod, safe_ns, debug_name, max_secs)
+    logs, logs_error = _read_ephemeral_container_logs(safe_pod, safe_ns, debug_name)
+
+    payload = {
+        "captured_at": datetime.now(tz=UTC).isoformat(),
+        "kind": "live_pod_forensics",
+        "incident_id": _sanitize_incident_id(incident_id),
+        "pod_name": safe_pod,
+        "namespace": safe_ns,
+        "target_container": selected_target,
+        "profile": profile,
+        "debug_container_name": debug_name,
+        "image": LIVE_FORENSICS_IMAGE,
+        "command_sha256": hashlib.sha256(json.dumps(command).encode()).hexdigest(),
+        "timeout_seconds": max_secs,
+        "terminated": terminated,
+        "exit_reason": reason,
+        "logs_error": logs_error,
+        "output": logs,
+    }
+
+    evidence: dict | None = None
+    if incident_id:
+        bucket, key = _forensics_destination(f"live-forensics/{profile}", safe_pod, incident_id)
+        evidence = _put_forensics_json(
+            bucket,
+            key,
+            payload,
+            incident_id=incident_id,
+            kind="live_pod_forensics",
+        )
+
+    return _success(
+        "collect_live_pod_forensics",
+        pod=safe_pod,
+        namespace=safe_ns,
+        target_container=selected_target,
+        profile=profile,
+        debug_container_name=debug_name,
+        terminated=terminated,
+        exit_reason=reason,
+        output_bytes=len(logs),
+        evidence_uri=(evidence or {}).get("uri"),
+        evidence_sha256=(evidence or {}).get("sha256"),
+    )
+
+
+def _validate_live_forensics_inputs(pod_name: str, namespace: str, profile: str) -> str | None:
+    if not _sanitize_k8s_dns_name(pod_name) or not _sanitize_k8s_dns_name(namespace):
+        return "pod_name/namespace contain invalid K8s characters"
+    if profile not in LIVE_FORENSICS_PROFILES:
+        return f"unknown profile '{profile}'; allowed: {sorted(LIVE_FORENSICS_PROFILES)}"
+    return None
+
+
+def _inject_ephemeral_container(
+    pod_name: str, namespace: str, debug_name: str, command: list[str], target_container: str
+) -> str | None:
+    ephemeral_container = {
+        "name": debug_name,
+        "image": LIVE_FORENSICS_IMAGE,
+        "command": command,
+        "targetContainerName": target_container,
+        "imagePullPolicy": "IfNotPresent",
+        "stdin": False,
+        "tty": False,
+        "securityContext": {
+            "allowPrivilegeEscalation": False,
+            "readOnlyRootFilesystem": True,
+            "runAsNonRoot": False,
+            "capabilities": {"drop": ["ALL"]},
+        },
+    }
+    try:
+        CORE.patch_namespaced_pod_ephemeralcontainers(
+            name=pod_name,
+            namespace=namespace,
+            body={"spec": {"ephemeralContainers": [ephemeral_container]}},
+            _preload_content=False,
+        )
+    except ApiException as error:
+        return f"inject_failed: {error.reason}"
+    except AttributeError:
+        return "ephemeral containers unsupported by this kubernetes client version"
+    return None
+
+
+def _read_ephemeral_container_logs(pod_name: str, namespace: str, container_name: str) -> tuple[str, str | None]:
+    try:
+        return CORE.read_namespaced_pod_log(name=pod_name, namespace=namespace, container=container_name), None
+    except ApiException as error:
+        logger.warning(
+            "Failed to read logs for %s/%s container %s: %s", namespace, pod_name, container_name, error.reason
+        )
+        return "", f"log_fetch_failed: {error.reason}"
+
+
+def _hex_suffix() -> str:
+    return secrets.token_hex(6)
+
+
+def _wait_for_ephemeral_container_exit(
+    pod_name: str, namespace: str, container_name: str, timeout_seconds: int
+) -> tuple[bool, str]:
+    import time as _time
+
+    deadline = _time.time() + timeout_seconds
+    while _time.time() < deadline:
+        try:
+            pod = CORE.read_namespaced_pod(name=pod_name, namespace=namespace)
+        except ApiException as error:
+            return False, f"pod_read_failed:{error.reason}"
+
+        statuses = pod.status.ephemeral_container_statuses or []
+        for status in statuses:
+            if status.name != container_name:
+                continue
+            state = status.state
+            if state and getattr(state, "terminated", None):
+                return True, getattr(state.terminated, "reason", "Completed") or "Completed"
+        _time.sleep(0.5)
+
+    return False, "watchdog_timeout"
+
+
 TOOLS = {
     "label_pod": label_pod,
     "delete_pod": delete_pod,
@@ -571,6 +770,7 @@ TOOLS = {
     "capture_hubble_flows": capture_hubble_flows,
     "collect_tetragon_timeline": collect_tetragon_timeline,
     "collect_audit_events": collect_audit_events,
+    "collect_live_pod_forensics": collect_live_pod_forensics,
 }
 
 
