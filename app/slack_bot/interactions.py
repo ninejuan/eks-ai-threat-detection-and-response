@@ -4,6 +4,7 @@ import os
 import time
 from typing import Any
 from urllib.parse import parse_qs
+from urllib.request import Request, urlopen
 
 import boto3
 
@@ -37,52 +38,65 @@ def _handle_approval_action(payload: dict, config: Config) -> dict:
     action_id = action.get("action_id", "")
     value = action.get("value", "")
     user = payload.get("user", {}).get("username", "unknown")
+    response_url = payload.get("response_url", "")
 
     parts = value.split("|") if value else []
     incident_id = parts[0] if parts else "unknown"
     task_token = parts[1] if len(parts) > 1 else ""
 
-    dynamodb = boto3.resource("dynamodb")
-    table = dynamodb.Table(f"{config.project}-approval-audit")
+    approved = action_id == "approve_remediation"
+    response_blocks = _approval_response_blocks(incident_id, user, approved=approved)
 
-    audit_record: dict[str, Any] = {
-        "approval_id": f"{incident_id}-{user}-{int(time.time())}",
-        "incident_id": incident_id,
-        "action": action_id,
-        "user": user,
-        "timestamp": int(time.time()),
-    }
+    if response_url:
+        _post_response_url(response_url, response_blocks)
 
-    sfn = boto3.client("stepfunctions")
-
-    if action_id == "approve_remediation":
-        audit_record["decision"] = "approved"
-        table.put_item(Item=audit_record)
-        if task_token:
-            sfn.send_task_success(
-                taskToken=task_token,
-                output=json.dumps({"decision": "approved", "approved_by": user}),
-            )
-        response_blocks = _approval_response_blocks(incident_id, user, approved=True)
-    elif action_id == "reject_remediation":
-        audit_record["decision"] = "rejected"
-        table.put_item(Item=audit_record)
-        if task_token:
-            sfn.send_task_success(
-                taskToken=task_token,
-                output=json.dumps({"decision": "rejected", "rejected_by": user}),
-            )
-        response_blocks = _approval_response_blocks(incident_id, user, approved=False)
-    else:
-        response_blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": f"❓ Unknown action: `{action_id}`"}}]
-
-    logger.info("Approval action: %s by %s for %s", action_id, user, incident_id)
+    _process_approval(config, incident_id, task_token, user, action_id, approved)
 
     return {
         "statusCode": 200,
         "headers": {"Content-Type": "application/json"},
         "body": json.dumps({"blocks": response_blocks, "replace_original": True}),
     }
+
+
+def _post_response_url(response_url: str, blocks: list[dict]) -> None:
+    payload = json.dumps({"blocks": blocks, "replace_original": True}).encode()
+    req = Request(response_url, data=payload, headers={"Content-Type": "application/json"})  # noqa: S310
+    try:
+        with urlopen(req, timeout=3) as resp:  # noqa: S310
+            logger.info("Posted to response_url: %s", resp.status)
+    except Exception:
+        logger.warning("Failed to post to response_url")
+
+
+def _process_approval(
+    config: Config, incident_id: str, task_token: str, user: str, action_id: str, approved: bool
+) -> None:
+    try:
+        dynamodb = boto3.resource("dynamodb")
+        table = dynamodb.Table(f"{config.project}-approval-audit")
+
+        audit_record: dict[str, Any] = {
+            "approval_id": f"{incident_id}-{user}-{int(time.time())}",
+            "incident_id": incident_id,
+            "action": action_id,
+            "user": user,
+            "timestamp": int(time.time()),
+            "decision": "approved" if approved else "rejected",
+        }
+        table.put_item(Item=audit_record)
+
+        if task_token:
+            sfn = boto3.client("stepfunctions")
+            decision_key = "approved_by" if approved else "rejected_by"
+            sfn.send_task_success(
+                taskToken=task_token,
+                output=json.dumps({"decision": "approved" if approved else "rejected", decision_key: user}),
+            )
+
+        logger.info("Approval processed: %s by %s for %s", action_id, user, incident_id)
+    except Exception:
+        logger.exception("Failed to process approval for %s", incident_id)
 
 
 def _approval_response_blocks(incident_id: str, user: str, approved: bool) -> list[dict]:
