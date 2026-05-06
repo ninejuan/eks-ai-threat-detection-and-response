@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 from urllib.request import Request, urlopen
 
 from app.shared.secrets import get_secret
@@ -8,6 +9,14 @@ logger = logging.getLogger(__name__)
 
 
 SLACK_MAX_TEXT_LENGTH = 2900
+
+
+def to_slack_mrkdwn(text: str) -> str:
+    result = text.strip()
+    result = re.sub(r"\*\*(.+?)\*\*", r"*\1*", result)
+    result = re.sub(r"__(.+?)__", r"_\1_", result)
+    result = re.sub(r"```(\w*)\n", "```\n", result)
+    return re.sub(r"#{1,6}\s+(.+)", r"*\1*", result)
 
 
 class SlackNotifier:
@@ -35,7 +44,7 @@ class SlackNotifier:
     def _build_normal_blocks(self, incident: dict) -> list[dict]:
         severity = incident.get("severity", "UNKNOWN")
         source = incident.get("source", "UNKNOWN")
-        summary = incident.get("summary", "No summary available")
+        summary = to_slack_mrkdwn(incident.get("summary", "No summary available"))
         incident_id = incident.get("incident_id", "N/A")
 
         return [

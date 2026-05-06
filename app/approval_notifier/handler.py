@@ -4,6 +4,7 @@ import os
 
 from app.shared.config import Config
 from app.shared.secrets import get_secret
+from app.shared.slack_notifier import to_slack_mrkdwn
 
 logger = logging.getLogger(__name__)
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
@@ -21,7 +22,7 @@ def lambda_handler(event: dict, context) -> dict:
     incident_id = summary.get("incident_id", "unknown")
     severity = triage.get("severity", "UNKNOWN")
     title = summary.get("title", "Security Incident")
-    reasoning = triage.get("reasoning", "")
+    reasoning = to_slack_mrkdwn(triage.get("reasoning", ""))
 
     actions = solution.get("recommended_actions", [])
     actions_text = "\n".join(

@@ -142,6 +142,7 @@ resource "aws_iam_role_policy" "lambda_agent" {
         Action = [
           "aws-marketplace:ViewSubscriptions",
           "aws-marketplace:Subscribe",
+          "aws-marketplace:Unsubscribe",
         ]
         Resource = "*"
       },

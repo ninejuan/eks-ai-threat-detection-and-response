@@ -4,6 +4,7 @@ import os
 
 from app.shared.bedrock import BedrockClient
 from app.shared.config import Config
+from app.shared.json_extract import extract_json
 
 logger = logging.getLogger(__name__)
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
@@ -11,17 +12,20 @@ logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
 SYSTEM_PROMPT = """You are a security event summarizer for an EKS-based threat detection system (ATDR).
 Your job is to take raw security events from GuardDuty or Falco and produce a structured summary.
 
-Output a JSON object with these fields:
-- incident_id: generated from source and timestamp (format: inc-YYYYMMDD-HHMMSS-SOURCE)
-- source: "guardduty" or "falco"
-- timestamp: ISO 8601 timestamp of the event
+Output ONLY a valid JSON object with these fields (no markdown, no explanation, no text before or after):
+- incident_id: generated from source and current time (format: inc-YYYYMMDD-HHMMSS-SOURCE)
+- source: "guardduty" or "falco" (infer from event structure)
+- timestamp: ISO 8601 timestamp extracted from the event, or current time if not available
 - title: one-line description of the event
 - summary: 2-3 sentence description of what happened
 - affected_resources: list of affected pods, nodes, namespaces, or AWS resources
 - raw_indicators: list of IPs, domains, file paths, or process names involved
-- mitre_technique: MITRE ATT&CK technique ID if identifiable (e.g. T1496)
+- mitre_technique: MITRE ATT&CK technique ID if identifiable (e.g. T1071)
 
-Be concise and factual. Do not speculate."""
+Rules:
+- Output ONLY the JSON object. No markdown fences, no notes, no explanations.
+- Use real values from the event. Never use placeholder timestamps like 2024-01-01T00:00:00Z.
+- Be concise and factual. Do not speculate."""
 
 
 def lambda_handler(event: dict, context) -> dict:
@@ -38,7 +42,7 @@ def lambda_handler(event: dict, context) -> dict:
     )
 
     try:
-        summary = json.loads(response_text)
+        summary = extract_json(response_text)
     except json.JSONDecodeError:
         logger.warning("Failed to parse summary as JSON, wrapping as text")
         summary = {"summary": response_text, "parse_error": True}

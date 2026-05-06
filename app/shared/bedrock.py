@@ -5,6 +5,18 @@ import boto3
 
 logger = logging.getLogger(__name__)
 
+FAST_MODEL_CHAIN = [
+    "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+    "apac.anthropic.claude-3-5-sonnet-20241022-v2:0",
+    "anthropic.claude-3-5-sonnet-20240620-v1:0",
+]
+
+SMART_MODEL_CHAIN = [
+    "apac.anthropic.claude-sonnet-4-20250514-v1:0",
+    "global.anthropic.claude-sonnet-4-6",
+    "apac.anthropic.claude-3-5-sonnet-20241022-v2:0",
+]
+
 
 class BedrockClient:
     def __init__(self, model_id: str, region: str = "ap-northeast-2"):
@@ -19,13 +31,7 @@ class BedrockClient:
             "messages": [{"role": "user", "content": user_message}],
         }
 
-        response = self._client.invoke_model(
-            modelId=self._model_id,
-            contentType="application/json",
-            accept="application/json",
-            body=json.dumps(body),
-        )
-
+        response = self._invoke_with_fallback(body)
         result = json.loads(response["body"].read())
         return result["content"][0]["text"]
 
@@ -44,11 +50,28 @@ class BedrockClient:
             "tools": tools,
         }
 
-        response = self._client.invoke_model(
-            modelId=self._model_id,
-            contentType="application/json",
-            accept="application/json",
-            body=json.dumps(body),
-        )
-
+        response = self._invoke_with_fallback(body)
         return json.loads(response["body"].read())
+
+    def _invoke_with_fallback(self, body: dict) -> dict:
+        models = [self._model_id] if self._model_id else []
+        if not models:
+            models = SMART_MODEL_CHAIN
+
+        last_error = None
+        for model_id in models:
+            try:
+                return self._client.invoke_model(
+                    modelId=model_id,
+                    contentType="application/json",
+                    accept="application/json",
+                    body=json.dumps(body),
+                )
+            except self._client.exceptions.AccessDeniedException as error:
+                logger.warning("Model %s access denied, trying next: %s", model_id, error)
+                last_error = error
+            except self._client.exceptions.ValidationException as error:
+                logger.warning("Model %s validation error, trying next: %s", model_id, error)
+                last_error = error
+
+        raise last_error

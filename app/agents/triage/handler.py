@@ -4,6 +4,7 @@ import os
 
 from app.shared.bedrock import BedrockClient
 from app.shared.config import Config
+from app.shared.json_extract import extract_json
 
 logger = logging.getLogger(__name__)
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
@@ -17,7 +18,7 @@ Severity levels:
 - P3 (Medium): Anomalous DNS queries, unusual process execution, policy violations
 - P4 (Low): Informational alerts, minor policy deviations, scan activity
 
-Output a JSON object with:
+Output ONLY a valid JSON object with these fields (no markdown, no explanation, no text before or after):
 - severity: P1, P2, P3, or P4
 - confidence: 0.0 to 1.0
 - category: one of [cryptomining, container_escape, privilege_escalation, data_exfiltration,
@@ -26,7 +27,9 @@ Output a JSON object with:
 - auto_remediate: boolean, true if severity is P3 or P4
 - requires_approval: boolean, true if severity is P1 or P2
 
-Be decisive. When in doubt, err on the side of higher severity."""
+Rules:
+- Output ONLY the JSON object. No markdown fences, no notes, no explanations.
+- Be decisive. When in doubt, err on the side of higher severity."""
 
 
 def lambda_handler(event: dict, context) -> dict:
@@ -43,7 +46,7 @@ def lambda_handler(event: dict, context) -> dict:
     )
 
     try:
-        triage = json.loads(response_text)
+        triage = extract_json(response_text)
     except json.JSONDecodeError:
         logger.warning("Failed to parse triage as JSON, defaulting to P2")
         triage = {
