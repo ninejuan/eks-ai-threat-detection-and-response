@@ -17,6 +17,7 @@ These instructions override convenience, personal preference, and generic best p
 - Do not add `Co-authored-by`, Sisyphus branding, or any other agent attribution to commits unless the user explicitly requests it.
 - Do not commit generated deployment artifacts such as Lambda zip bundles, build outputs, or other reproducible archives unless the user explicitly requests tracked artifacts.
 - Do not create one commit per file or per trivial artifact. Group commits by logical change that can be reviewed and reverted independently.
+- Commit messages must be 25 characters or fewer. No exceptions.
 - Do not modify `Makefile` or other operator-facing entrypoints merely to run one-off restart, rollout, debug, or recovery commands needed for the current session. Run those commands directly. Only change user-facing workflows when the change is a durable improvement for future operators.
 
 ## Instruction-Drift Defense

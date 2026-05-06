@@ -22,7 +22,7 @@
         "description": "Open the ATDR system status view"
       },
       {
-        "name": "Acknowledge ATDR Incident",
+        "name": "Ack ATDR Incident",
         "type": "global",
         "callback_id": "atdr_ack_incident",
         "description": "Acknowledge an incident by ID"
