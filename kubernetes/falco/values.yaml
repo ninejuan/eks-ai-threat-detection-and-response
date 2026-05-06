@@ -28,7 +28,7 @@ customRules:
         and container_entrypoint
       output: >
         Shell opened in container
-        (user=%user.name user_loginuid=%user.loginuid %container.info
+        (user=%user.name user_loginuid=%user.loginuid
         shell=%proc.name parent=%proc.pname cmdline=%proc.cmdline
         pid=%proc.pid terminal=%proc.tty container_id=%container.id
         image=%container.image.repository)
@@ -59,14 +59,14 @@ customRules:
       priority: WARNING
       tags: [filesystem, mitre_credential_access]
 
-    - rule: Kubernetes secret accessed
-      desc: Detect access to Kubernetes secrets via API
+    - rule: Sensitive mount detected
+      desc: Container started with sensitive host path mount
       condition: >
-        kevt and (ka.verb=get or ka.verb=list)
-        and ka.target.resource=secrets
+        spawned_process and container
+        and proc.name in (mount, umount)
       output: >
-        K8s secret accessed
-        (user=%ka.user.name verb=%ka.verb
-        secret=%ka.target.name namespace=%ka.target.namespace)
-      priority: NOTICE
-      tags: [k8s, secrets, mitre_credential_access, T1552]
+        Sensitive mount operation in container
+        (user=%user.name command=%proc.cmdline
+        container_id=%container.id image=%container.image.repository)
+      priority: WARNING
+      tags: [container, mount, mitre_privilege_escalation]

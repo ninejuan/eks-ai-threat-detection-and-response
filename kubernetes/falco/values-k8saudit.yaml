@@ -1,0 +1,59 @@
+driver:
+  enabled: false
+
+collectors:
+  enabled: false
+
+controller:
+  kind: deployment
+  deployment:
+    replicas: 1
+
+falcoctl:
+  artifact:
+    install:
+      enabled: true
+    follow:
+      enabled: true
+  config:
+    artifact:
+      allowedTypes:
+        - plugin
+        - rulesfile
+      install:
+        resolveDeps: false
+        refs: [k8saudit-rules:0, k8saudit-eks:0, json:0]
+      follow:
+        refs: [k8saudit-rules:0]
+
+falco:
+  rules_files:
+    - /etc/falco/k8s_audit_rules.yaml
+    - /etc/falco/rules.d
+  plugins:
+    - name: k8saudit-eks
+      library_path: libk8saudit-eks.so
+      init_config:
+        region: ap-northeast-2
+        shift: 10
+        polling_interval: 10
+        use_async: false
+        buffer_size: 500
+      open_params: ${EKS_CLUSTER_NAME}
+    - name: json
+      library_path: libjson.so
+      init_config: ""
+  load_plugins: [k8saudit-eks, json]
+
+serviceAccount:
+  create: true
+  name: falco-k8saudit
+
+falcosidekick:
+  enabled: true
+  config:
+    aws:
+      region: ap-northeast-2
+      sns:
+        topicarn: ""
+        rawjson: false
