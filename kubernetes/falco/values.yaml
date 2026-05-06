@@ -15,6 +15,7 @@ collectors:
 
 falcosidekick:
   enabled: true
+  replicaCount: 1
   image:
     tag: 2.33.0
   config:

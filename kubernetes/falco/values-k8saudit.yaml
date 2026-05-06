@@ -51,6 +51,7 @@ serviceAccount:
 
 falcosidekick:
   enabled: true
+  replicaCount: 1
   config:
     aws:
       region: ap-northeast-2
