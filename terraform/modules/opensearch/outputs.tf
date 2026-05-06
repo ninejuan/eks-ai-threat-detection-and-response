@@ -9,3 +9,7 @@ output "collection_endpoint" {
 output "collection_id" {
   value = aws_opensearchserverless_collection.this.id
 }
+
+output "vector_index_name" {
+  value = local.vector_index
+}

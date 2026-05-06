@@ -1,5 +1,7 @@
 locals {
   collection_name = "${var.project}-vector"
+  vector_index    = "${var.project}-runbooks-index"
+  embedding_model = coalesce(var.embedding_model_arn, "arn:aws:bedrock:${var.region}::foundation-model/amazon.titan-embed-text-v2:0")
 }
 
 resource "aws_opensearchserverless_security_policy" "encryption" {
@@ -67,7 +69,7 @@ resource "aws_opensearchserverless_access_policy" "this" {
           ]
         }
       ]
-      Principal = [var.bedrock_kb_role_arn, var.lambda_role_arn]
+      Principal = [var.bedrock_kb_role_arn, var.lambda_role_arn, var.admin_principal_arn]
     }
   ])
 }

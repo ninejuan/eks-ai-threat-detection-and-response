@@ -3,6 +3,8 @@ data "aws_caller_identity" "current" {}
 locals {
   account_id      = data.aws_caller_identity.current.account_id
   admin_principal = var.admin_principal_arn != "" ? var.admin_principal_arn : data.aws_caller_identity.current.arn
+  admin_user_name = startswith(local.admin_principal, "arn:aws:iam::${local.account_id}:user/") ? trimprefix(local.admin_principal, "arn:aws:iam::${local.account_id}:user/") : ""
+  admin_role_name = startswith(local.admin_principal, "arn:aws:iam::${local.account_id}:role/") ? trimprefix(local.admin_principal, "arn:aws:iam::${local.account_id}:role/") : ""
   common_tags = {
     Environment = var.environment
     Project     = var.project_name
@@ -79,8 +81,10 @@ module "opensearch" {
   source = "../../modules/opensearch"
 
   project             = var.project_name
+  region              = var.region
   bedrock_kb_role_arn = module.iam.bedrock_kb_role_arn
   lambda_role_arn     = module.iam.lambda_agent_role_arn
+  admin_principal_arn = local.admin_principal
 }
 
 module "lambda" {
@@ -234,4 +238,40 @@ resource "aws_ecr_repository" "mcp_server" {
   tags = {
     Name = "${var.project_name}-eks-mcp-server"
   }
+}
+
+resource "aws_iam_user_policy" "admin_assume_opensearch_index_manager" {
+  count = local.admin_user_name != "" ? 1 : 0
+
+  name = "${var.project_name}-assume-opensearch-index-manager"
+  user = local.admin_user_name
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Action = [
+        "sts:AssumeRole",
+      ]
+      Resource = module.iam.opensearch_index_manager_role_arn
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "admin_assume_opensearch_index_manager" {
+  count = local.admin_role_name != "" ? 1 : 0
+
+  name = "${var.project_name}-assume-opensearch-index-manager"
+  role = local.admin_role_name
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Action = [
+        "sts:AssumeRole",
+      ]
+      Resource = module.iam.opensearch_index_manager_role_arn
+    }]
+  })
 }

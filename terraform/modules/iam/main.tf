@@ -134,6 +134,15 @@ resource "aws_iam_role_policy" "lambda_agent" {
         Resource = "arn:aws:bedrock:${var.region}::foundation-model/*"
       },
       {
+        Sid    = "BedrockKnowledgeBaseRetrieve"
+        Effect = "Allow"
+        Action = [
+          "bedrock:Retrieve",
+          "bedrock:RetrieveAndGenerate",
+        ]
+        Resource = "arn:aws:bedrock:${var.region}:${local.account_id}:knowledge-base/*"
+      },
+      {
         Sid    = "SQSConsume"
         Effect = "Allow"
         Action = [
@@ -423,6 +432,38 @@ resource "aws_iam_role_policy" "bedrock_kb" {
         Resource = "arn:aws:bedrock:${var.region}::foundation-model/amazon.titan-embed-text-v2*"
       },
     ]
+  })
+}
+
+resource "aws_iam_role" "opensearch_index_manager" {
+  name = "${var.project}-opensearch-index-manager"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Principal = {
+        AWS = "arn:aws:iam::${local.account_id}:root"
+      }
+      Action = "sts:AssumeRole"
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "opensearch_index_manager" {
+  name = "${var.project}-opensearch-index-manager-policy"
+  role = aws_iam_role.opensearch_index_manager.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid    = "OpenSearchDataPlaneAccess"
+      Effect = "Allow"
+      Action = [
+        "aoss:APIAccessAll",
+      ]
+      Resource = "arn:aws:aoss:${var.region}:${local.account_id}:collection/*"
+    }]
   })
 }
 

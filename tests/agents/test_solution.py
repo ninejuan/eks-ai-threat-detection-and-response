@@ -45,3 +45,37 @@ def test_lambda_handler_handles_missing_nested_fields(monkeypatch, context):
 
     assert result == {"recommended_actions": []}
     assert "{}" in client.invoke.call_args.kwargs["user_message"]
+
+
+def test_lambda_handler_includes_knowledge_base_context(monkeypatch, context):
+    client = MagicMock()
+    client.invoke.return_value = json.dumps({"recommended_actions": []})
+    kb = MagicMock()
+    kb.retrieve.return_value = [
+        {"content": "Use checkpoint_pod before isolation", "source": "s3://runbooks/reverse-shell.md", "score": 0.91}
+    ]
+
+    monkeypatch.setenv("KNOWLEDGE_BASE_ID", "kb-test")
+    monkeypatch.setattr(handler, "BedrockClient", lambda model_id, region: client)
+    monkeypatch.setattr("app.shared.knowledge_base.KnowledgeBaseClient", lambda knowledge_base_id, region: kb)
+
+    handler.lambda_handler(
+        {"summary": {"body": {"title": "reverse shell"}}, "triage": {"body": {"severity": "P1"}}}, context
+    )
+
+    user_message = client.invoke.call_args.kwargs["user_message"]
+    assert "Relevant runbook context" in user_message
+    assert "Use checkpoint_pod before isolation" in user_message
+    assert "s3://runbooks/reverse-shell.md" in user_message
+
+
+def test_lambda_handler_skips_knowledge_base_without_id(monkeypatch, context):
+    client = MagicMock()
+    client.invoke.return_value = json.dumps({"recommended_actions": []})
+
+    monkeypatch.setenv("KNOWLEDGE_BASE_ID", "")
+    monkeypatch.setattr(handler, "BedrockClient", lambda model_id, region: client)
+
+    handler.lambda_handler({"summary": {"body": {"title": "bad"}}, "triage": {"body": {"severity": "P2"}}}, context)
+
+    assert "Relevant runbook context" not in client.invoke.call_args.kwargs["user_message"]

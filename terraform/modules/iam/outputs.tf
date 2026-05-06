@@ -30,6 +30,10 @@ output "bedrock_kb_role_arn" {
   value = aws_iam_role.bedrock_kb.arn
 }
 
+output "opensearch_index_manager_role_arn" {
+  value = aws_iam_role.opensearch_index_manager.arn
+}
+
 output "aws_lb_controller_role_arn" {
   value = aws_iam_role.aws_lb_controller.arn
 }

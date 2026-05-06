@@ -39,12 +39,24 @@ output "opensearch_endpoint" {
   value = module.opensearch.collection_endpoint
 }
 
+output "opensearch_collection_arn" {
+  value = module.opensearch.collection_arn
+}
+
+output "opensearch_vector_index_name" {
+  value = module.opensearch.vector_index_name
+}
+
 output "sns_topic_arn" {
   value = module.sns_sqs.sns_topic_arn
 }
 
 output "forensics_bucket_id" {
   value = module.s3.forensics_bucket_id
+}
+
+output "runbooks_bucket_id" {
+  value = module.s3.runbooks_bucket_id
 }
 
 output "mcp_server_repository_url" {

@@ -10,6 +10,7 @@ LAYER_DIR    := build/layer/python
 
 .PHONY: infra-up infra-down platform-up platform-down deploy-lambdas deploy-layer \
         all-up all-down status lint lint-fix test build build-layer build-lambdas build-mcp \
+        sync-runbooks create-opensearch-index create-kb kb-sync \
         secrets scale-down scale-up scale-status backup-db clean slack-manifest
 
 ## ─── Infrastructure ──────────────────────────────────────────────
@@ -79,6 +80,30 @@ platform-up:
 	done
 	@$(KCTL) wait --for=condition=Established crd/tracingpolicies.cilium.io --timeout=60s
 	$(KCTL) apply -f kubernetes/tetragon/tracing-policies.yaml
+	@echo "--- External Secrets Operator ---"
+	$(HLM) upgrade --install external-secrets external-secrets/external-secrets \
+		-n external-secrets --create-namespace
+	@echo "Waiting for ESO CRDs and webhook..."
+	@$(KCTL) wait --for=condition=Established crd/clustersecretstores.external-secrets.io --timeout=60s
+	@$(KCTL) wait --for=condition=Established crd/externalsecrets.external-secrets.io --timeout=60s
+	@$(KCTL) rollout status deployment/external-secrets-webhook -n external-secrets --timeout=120s
+	$(KCTL) create namespace monitoring --dry-run=client -o yaml | $(KCTL) apply -f -
+	$(KCTL) create namespace atdr --dry-run=client -o yaml | $(KCTL) apply -f -
+	@aws secretsmanager get-secret-value --secret-id atdr/mcp/auth-token --region $(REGION) --query SecretString --output text >/dev/null || \
+		(echo "ERROR: atdr/mcp/auth-token is empty. Run make secrets before make platform-up."; exit 1)
+	@python3 -c 'from pathlib import Path; import sys; print(Path("kubernetes/external-secrets/external-secrets.yaml").read_text().replace("$${AWS_REGION}", sys.argv[1]))' "$(REGION)" | $(KCTL) apply -f -
+	@echo "Waiting for Slack webhook secret..."
+	@for i in 1 2 3 4 5 6 7 8 9 10 11 12; do \
+		$(KCTL) get secret slack-webhook-url -n monitoring >/dev/null 2>&1 && exit 0; \
+		sleep 5; \
+	done; \
+	echo "ERROR: slack-webhook-url was not synced by External Secrets"; exit 1
+	@echo "Waiting for MCP auth token secret..."
+	@for i in 1 2 3 4 5 6 7 8 9 10 11 12; do \
+		$(KCTL) get secret mcp-auth-token -n atdr >/dev/null 2>&1 && exit 0; \
+		sleep 5; \
+	done; \
+	echo "ERROR: mcp-auth-token was not synced by External Secrets"; exit 1
 	@echo "--- kube-prometheus-stack ---"
 	$(HLM) upgrade --install monitoring prometheus-community/kube-prometheus-stack \
 		-n monitoring --create-namespace \
@@ -90,23 +115,6 @@ platform-up:
 	@echo "--- Grafana Ingress ---"
 	$(KCTL) apply -f kubernetes/monitoring/grafana-ingress.yaml
 	$(KCTL) apply -f kubernetes/monitoring/atdr-dashboard.yaml
-	@echo "--- External Secrets Operator ---"
-	$(HLM) upgrade --install external-secrets external-secrets/external-secrets \
-		-n external-secrets --create-namespace
-	@echo "Waiting for ESO CRDs and webhook..."
-	@$(KCTL) wait --for=condition=Established crd/clustersecretstores.external-secrets.io --timeout=60s
-	@$(KCTL) wait --for=condition=Established crd/externalsecrets.external-secrets.io --timeout=60s
-	@$(KCTL) rollout status deployment/external-secrets-webhook -n external-secrets --timeout=120s
-	$(KCTL) create namespace atdr --dry-run=client -o yaml | $(KCTL) apply -f -
-	@aws secretsmanager get-secret-value --secret-id atdr/mcp/auth-token --region $(REGION) --query SecretString --output text >/dev/null || \
-		(echo "ERROR: atdr/mcp/auth-token is empty. Run make secrets before make platform-up."; exit 1)
-	@python3 -c 'from pathlib import Path; import sys; print(Path("kubernetes/external-secrets/external-secrets.yaml").read_text().replace("$${AWS_REGION}", sys.argv[1]))' "$(REGION)" | $(KCTL) apply -f -
-	@echo "Waiting for MCP auth token secret..."
-	@for i in 1 2 3 4 5 6 7 8 9 10 11 12; do \
-		$(KCTL) get secret mcp-auth-token -n atdr >/dev/null 2>&1 && exit 0; \
-		sleep 5; \
-	done; \
-	echo "ERROR: mcp-auth-token was not synced by External Secrets"; exit 1
 	@echo "--- EKS MCP Server ---"
 	@$(MAKE) -s build-mcp
 	@MCP_IMAGE=$$(cd $(TF_DIR) && terraform output -raw mcp_server_repository_url):$(MCP_IMAGE_TAG) && \
@@ -197,8 +205,85 @@ deploy-layer: build-layer
 
 ## ─── Full Lifecycle ──────────────────────────────────────────────
 
-all-up: infra-up secrets platform-up deploy-lambdas
+all-up: infra-up secrets sync-runbooks create-opensearch-index create-kb kb-sync platform-up deploy-lambdas
 	@echo "Full deployment complete."
+
+sync-runbooks:
+	@RUNBOOKS_BUCKET=$$(cd $(TF_DIR) && terraform output -raw runbooks_bucket_id) && \
+		aws s3 sync docs/11-runbooks "s3://$$RUNBOOKS_BUCKET/runbooks/" --exclude "README.md" --include "*.md" --region $(REGION) --no-cli-pager
+	@echo "Runbooks synced."
+
+create-opensearch-index:
+	@OPENSEARCH_ENDPOINT=$$(cd $(TF_DIR) && terraform output -raw opensearch_endpoint) \
+		OPENSEARCH_INDEX_NAME=$$(cd $(TF_DIR) && terraform output -raw opensearch_vector_index_name) \
+		AWS_REGION=$(REGION) \
+		PYTHONPATH=. python3 scripts/create_opensearch_index.py
+	@echo "OpenSearch vector index is ready."
+
+create-kb:
+	@COLLECTION_ARN=$$(cd $(TF_DIR) && terraform output -raw opensearch_collection_arn) && \
+		INDEX_NAME=$$(cd $(TF_DIR) && terraform output -raw opensearch_vector_index_name) && \
+		KB_ROLE_ARN=$$(aws iam get-role --role-name atdr-bedrock-kb --query 'Role.Arn' --output text --no-cli-pager) && \
+		RUNBOOKS_BUCKET_ARN=$$(cd $(TF_DIR) && terraform output -raw runbooks_bucket_id | xargs -I{} echo "arn:aws:s3:::{}") && \
+		KB_ID=$$(aws bedrock-agent list-knowledge-bases --region $(REGION) --query 'knowledgeBaseSummaries[?name==`atdr-runbooks-kb`].knowledgeBaseId | [0]' --output text --no-cli-pager) && \
+		if [ "$$KB_ID" = "None" ] || [ -z "$$KB_ID" ]; then \
+			echo "Creating Knowledge Base..."; \
+			KB_ID=$$(aws bedrock-agent create-knowledge-base \
+				--name atdr-runbooks-kb \
+				--description "ATDR response runbooks indexed for Solution Agent RAG" \
+				--role-arn $$KB_ROLE_ARN \
+				--knowledge-base-configuration '{"type":"VECTOR","vectorKnowledgeBaseConfiguration":{"embeddingModelArn":"arn:aws:bedrock:$(REGION)::foundation-model/amazon.titan-embed-text-v2:0","embeddingModelConfiguration":{"bedrockEmbeddingModelConfiguration":{"dimensions":1024,"embeddingDataType":"FLOAT32"}}}}' \
+				--storage-configuration "{\"type\":\"OPENSEARCH_SERVERLESS\",\"opensearchServerlessConfiguration\":{\"collectionArn\":\"$$COLLECTION_ARN\",\"vectorIndexName\":\"$$INDEX_NAME\",\"fieldMapping\":{\"vectorField\":\"bedrock-vector\",\"textField\":\"AMAZON_BEDROCK_TEXT_CHUNK\",\"metadataField\":\"AMAZON_BEDROCK_METADATA\"}}}" \
+				--region $(REGION) --no-cli-pager --query 'knowledgeBase.knowledgeBaseId' --output text); \
+			echo "Knowledge Base created: $$KB_ID"; \
+			echo "Waiting for KB to become ACTIVE..."; \
+			for i in 1 2 3 4 5 6 7 8 9 10 11 12; do \
+				STATUS=$$(aws bedrock-agent get-knowledge-base --knowledge-base-id $$KB_ID --region $(REGION) --query 'knowledgeBase.status' --output text --no-cli-pager); \
+				if [ "$$STATUS" = "ACTIVE" ]; then break; fi; \
+				sleep 10; \
+			done; \
+		else \
+			echo "Knowledge Base already exists: $$KB_ID"; \
+		fi && \
+		DS_ID=$$(aws bedrock-agent list-data-sources --knowledge-base-id $$KB_ID --region $(REGION) --query 'dataSourceSummaries[?name==`atdr-runbooks`].dataSourceId | [0]' --output text --no-cli-pager) && \
+		if [ "$$DS_ID" = "None" ] || [ -z "$$DS_ID" ]; then \
+			echo "Creating Data Source..."; \
+			DS_ID=$$(aws bedrock-agent create-data-source \
+				--knowledge-base-id $$KB_ID \
+				--name atdr-runbooks \
+				--description "Markdown runbooks stored in S3" \
+				--data-source-configuration "{\"type\":\"S3\",\"s3Configuration\":{\"bucketArn\":\"$$RUNBOOKS_BUCKET_ARN\",\"inclusionPrefixes\":[\"runbooks/\"]}}" \
+				--vector-ingestion-configuration '{"chunkingConfiguration":{"chunkingStrategy":"FIXED_SIZE","fixedSizeChunkingConfiguration":{"maxTokens":300,"overlapPercentage":20}}}' \
+				--region $(REGION) --no-cli-pager --query 'dataSource.dataSourceId' --output text); \
+			echo "Data Source created: $$DS_ID"; \
+		else \
+			echo "Data Source already exists: $$DS_ID"; \
+		fi && \
+		echo "Updating Lambda KNOWLEDGE_BASE_ID to $$KB_ID..." && \
+		for fn in atdr-summary-agent atdr-triage-agent atdr-solution-agent atdr-remediation-agent; do \
+			aws lambda update-function-configuration \
+				--function-name $$fn \
+				--environment "Variables={$$(aws lambda get-function-configuration --function-name $$fn --region $(REGION) --query 'Environment.Variables' --output json --no-cli-pager | python3 -c 'import json,sys; d=json.load(sys.stdin); d["KNOWLEDGE_BASE_ID"]="'$$KB_ID'"; print(",".join(f"{k}={v}" for k,v in d.items()))')}" \
+				--region $(REGION) --no-cli-pager >/dev/null; \
+		done && \
+		echo "Knowledge Base ready: $$KB_ID (data source: $$DS_ID)"
+
+kb-sync:
+	@KB_ID=$$(aws bedrock-agent list-knowledge-bases --region $(REGION) --query 'knowledgeBaseSummaries[?name==`atdr-runbooks-kb`].knowledgeBaseId | [0]' --output text --no-cli-pager) && \
+		DS_ID=$$(aws bedrock-agent list-data-sources --knowledge-base-id $$KB_ID --region $(REGION) --query 'dataSourceSummaries[?name==`atdr-runbooks`].dataSourceId | [0]' --output text --no-cli-pager) && \
+		aws bedrock-agent start-ingestion-job \
+			--knowledge-base-id $$KB_ID \
+			--data-source-id $$DS_ID \
+			--region $(REGION) --no-cli-pager >/tmp/atdr-kb-ingestion.json && \
+		JOB_ID=$$(python3 -c 'import json; print(json.load(open("/tmp/atdr-kb-ingestion.json"))["ingestionJob"]["ingestionJobId"])') && \
+		for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do \
+			STATUS=$$(aws bedrock-agent get-ingestion-job --knowledge-base-id $$KB_ID --data-source-id $$DS_ID --ingestion-job-id $$JOB_ID --region $(REGION) --query 'ingestionJob.status' --output text --no-cli-pager); \
+			echo "Knowledge Base ingestion $$JOB_ID: $$STATUS"; \
+			if [ "$$STATUS" = "COMPLETE" ]; then exit 0; fi; \
+			if [ "$$STATUS" = "FAILED" ] || [ "$$STATUS" = "STOPPED" ]; then exit 1; fi; \
+			sleep 15; \
+		done; \
+		echo "ERROR: Knowledge Base ingestion did not complete in time"; exit 1
 
 all-down:
 	$(MAKE) platform-down || true
