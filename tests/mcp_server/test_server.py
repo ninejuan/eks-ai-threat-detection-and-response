@@ -163,11 +163,26 @@ def test_capture_hubble_flows_writes_forensics_evidence(server_module, monkeypat
     monkeypatch.setattr(server_module, "CORE", CoreApi())
     monkeypatch.setattr(server_module, "CUSTOM", CustomApi())
     monkeypatch.setattr(server_module, "S3", S3Client())
+    fake_flows = {
+        "target": "hubble-relay.kube-system.svc.cluster.local:4245",
+        "selector": "default/pod-a",
+        "since": "2026-05-07T00:00:00+00:00",
+        "until": "2026-05-07T00:05:00+00:00",
+        "flow_count": 2,
+        "lost_events": [],
+        "flows": [
+            {"uuid": "f-1", "verdict": "FORWARDED", "source": {"pod_name": "pod-a"}},
+            {"uuid": "f-2", "verdict": "DROPPED", "destination": {"pod_name": "pod-a"}},
+        ],
+    }
+    monkeypatch.setattr(server_module, "_capture_hubble_flows", lambda **_kwargs: fake_flows)
 
     result = server_module.capture_hubble_flows("pod-a", "default", incident_id="inc-2026-xyz")
 
     assert result["status"] == "success"
     assert result["endpoints_found"] == 1
+    assert result["hubble_flow_count"] == 2
+    assert result["hubble_error"] is None
     assert result["evidence_uri"].startswith("s3://atdr-forensics-test/incidents/inc-2026-xyz/network-evidence/pod-a/")
     assert "evidence_sha256" in result
 
@@ -180,10 +195,53 @@ def test_capture_hubble_flows_writes_forensics_evidence(server_module, monkeypat
     assert payload["pod_name"] == "pod-a"
     assert payload["pod_ip"] == "10.0.0.5"
     assert payload["cilium_endpoints"]["items"][0]["metadata"]["name"] == "endpoint-a"
+    assert payload["hubble_flows"]["flow_count"] == 2
+    assert payload["hubble_error"] is None
 
     manifest_entry = json.loads(manifest_call["Body"].decode("utf-8"))
     assert manifest_entry["evidence"][0]["kind"] == "network_flow_snapshot"
     assert manifest_entry["evidence"][0]["sha256"] == result["evidence_sha256"]
+
+
+def test_capture_hubble_flows_records_relay_failure(server_module, monkeypatch):
+    pod = SimpleNamespace(
+        spec=SimpleNamespace(node_name="node-a"),
+        status=SimpleNamespace(pod_ip="10.0.0.5", host_ip="10.0.0.1"),
+        metadata=SimpleNamespace(labels={}),
+    )
+
+    class CoreApi:
+        def read_namespaced_pod(self, name, namespace):  # noqa: ARG002
+            return pod
+
+    class CustomApi:
+        def list_namespaced_custom_object(self, **kwargs):  # noqa: ARG002
+            return {"items": []}
+
+    put_calls = []
+
+    class S3Client:
+        def put_object(self, **kwargs):
+            put_calls.append(kwargs)
+
+    def raising_flow_fetch(**_kwargs):
+        raise RuntimeError("relay unreachable: connection refused")
+
+    monkeypatch.setattr(server_module, "CORE", CoreApi())
+    monkeypatch.setattr(server_module, "CUSTOM", CustomApi())
+    monkeypatch.setattr(server_module, "S3", S3Client())
+    monkeypatch.setattr(server_module, "_capture_hubble_flows", raising_flow_fetch)
+
+    result = server_module.capture_hubble_flows("pod-a", "default")
+
+    assert result["status"] == "success"
+    assert result["hubble_flow_count"] == 0
+    assert "relay unreachable" in result["hubble_error"]
+
+    evidence_call = next(call for call in put_calls if "/evidence.json" in call["Key"])
+    payload = json.loads(evidence_call["Body"].decode("utf-8"))
+    assert payload["hubble_flows"] is None
+    assert "relay unreachable" in payload["hubble_error"]
 
 
 def test_put_forensics_object_returns_sha256(server_module, monkeypatch):

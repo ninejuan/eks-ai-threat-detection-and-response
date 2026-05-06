@@ -266,13 +266,19 @@ def checkpoint_pod(
     )
 
 
-def capture_hubble_flows(pod_name: str, namespace: str, incident_id: str | None = None) -> dict:
+def capture_hubble_flows(
+    pod_name: str,
+    namespace: str,
+    since_minutes: int = 5,
+    max_flows: int = 2000,
+    incident_id: str | None = None,
+) -> dict:
     pod = CORE.read_namespaced_pod(name=pod_name, namespace=namespace)
     pod_ip = pod.status.pod_ip or "unknown"
     host_ip = pod.status.host_ip or "unknown"
     node_name = pod.spec.node_name or "unknown"
 
-    endpoints = {}
+    endpoints: dict = {}
     try:
         endpoints = CUSTOM.list_namespaced_custom_object(
             group="cilium.io",
@@ -283,6 +289,19 @@ def capture_hubble_flows(pod_name: str, namespace: str, incident_id: str | None 
         )
     except ApiException:
         endpoints = {"items": [], "note": "CiliumEndpoints not available (ENI mode)"}
+
+    flows_payload: dict | None = None
+    flows_error: str | None = None
+    try:
+        flows_payload = _capture_hubble_flows(
+            pod_namespace=namespace,
+            pod_name=pod_name,
+            since_minutes=int(since_minutes),
+            max_flows=int(max_flows),
+        )
+    except Exception as error:
+        flows_error = f"{type(error).__name__}: {error}"
+        logger.warning("Hubble flow capture failed for %s/%s: %s", namespace, pod_name, flows_error)
 
     bucket, key = _forensics_destination("network-evidence", pod_name, incident_id)
     evidence = _put_forensics_json(
@@ -299,10 +318,13 @@ def capture_hubble_flows(pod_name: str, namespace: str, incident_id: str | None 
             "node_name": node_name,
             "cilium_endpoints": endpoints,
             "pod_labels": pod.metadata.labels or {},
+            "hubble_flows": flows_payload,
+            "hubble_error": flows_error,
         },
         incident_id=incident_id,
         kind="network_flow_snapshot",
     )
+    flow_count = flows_payload.get("flow_count", 0) if isinstance(flows_payload, dict) else 0
     return _success(
         "capture_hubble_flows",
         pod=pod_name,
@@ -310,8 +332,21 @@ def capture_hubble_flows(pod_name: str, namespace: str, incident_id: str | None 
         pod_ip=pod_ip,
         node_name=node_name,
         endpoints_found=len(endpoints.get("items", [])),
+        hubble_flow_count=flow_count,
+        hubble_error=flows_error,
         evidence_uri=evidence["uri"],
         evidence_sha256=evidence["sha256"],
+    )
+
+
+def _capture_hubble_flows(pod_namespace: str, pod_name: str, since_minutes: int, max_flows: int) -> dict:
+    from hubble_client import get_flows_for_pod
+
+    return get_flows_for_pod(
+        pod_namespace=pod_namespace,
+        pod_name=pod_name,
+        since_minutes=since_minutes,
+        number=max_flows,
     )
 
 

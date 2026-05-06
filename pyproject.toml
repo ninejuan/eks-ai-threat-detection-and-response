@@ -1,6 +1,10 @@
 [tool.ruff]
 target-version = "py312"
 line-length = 120
+extend-exclude = [
+    "mcp_server/_generated",
+    "mcp_server/proto",
+]
 
 [tool.ruff.lint]
 select = [

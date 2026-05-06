@@ -46,3 +46,4 @@ build/
 .terraform.lock.hcl
 slack/manifest.json
 *.zip
+mcp_server/_generated/
