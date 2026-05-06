@@ -1,5 +1,7 @@
 # 횡적 이동 (Lateral Movement)
 
+> 자동 대응은 MCP 도구를 우선 사용한다. 아래 `kubectl` 명령은 운영자 수동 검증 또는 break-glass 절차다.
+
 ## 개요
 
 공격자가 초기 침투한 컨테이너에서 다른 pod, 네임스페이스, 또는 클러스터 내 서비스로 이동하는 공격이다. ServiceAccount 토큰을 이용한 Kubernetes API 접근, 내부 서비스 스캐닝, 취약한 서비스 익스플로잇이 주요 수법이다.

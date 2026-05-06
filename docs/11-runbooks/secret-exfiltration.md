@@ -1,5 +1,7 @@
 # 시크릿 탈취 (Secret Exfiltration)
 
+> 자동 대응은 MCP 도구를 우선 사용한다. 아래 `kubectl` 명령은 운영자 수동 검증 또는 break-glass 절차다.
+
 ## 개요
 
 공격자가 컨테이너 내부에서 Kubernetes Secret, ServiceAccount 토큰, 환경변수에 포함된 자격증명, AWS IAM 자격증명 등을 탈취하는 공격이다. 탈취된 자격증명은 횡적 이동이나 클라우드 리소스 접근에 사용된다.

@@ -1,5 +1,7 @@
 # RBAC 남용 (RBAC Abuse)
 
+> 자동 대응은 MCP 도구를 우선 사용한다. 아래 `kubectl` 명령은 운영자 수동 검증 또는 break-glass 절차다.
+
 ## 개요
 
 공격자가 과도하게 부여된 Kubernetes RBAC 권한을 이용하거나, 새로운 ClusterRoleBinding을 생성해 cluster-admin 권한을 획득하는 공격이다. 합법적인 자격증명을 사용하기 때문에 탐지가 어렵고, 성공 시 클러스터 전체를 장악할 수 있다.

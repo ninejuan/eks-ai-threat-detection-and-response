@@ -2,7 +2,7 @@
 
 EKS 환경에서 보안 위협을 실시간 탐지하고, AI 에이전트 체인으로 분석·대응하는 시스템.
 
-<!-- TODO: 아키텍처 다이어그램 삽입 -->
+아키텍처 원본 다이어그램은 `refs/eksai1.jpg`, `refs/eksai2.jpg`를 따른다.
 
 ## Architecture
 
@@ -85,30 +85,13 @@ Terraform으로 전체 AWS 인프라를 생성한다:
 
 약 15-20분 소요. 완료 후 kubeconfig가 자동 설정된다.
 
-### 3. Platform Up (Kubernetes 컴포넌트)
-
-```bash
-make platform-up
-```
-
-Helm으로 보안/관측 스택을 배포한다:
-- AWS Load Balancer Controller
-- Falco + custom rules
-- Tetragon + TracingPolicies
-- kube-prometheus-stack (Prometheus + Grafana + Alertmanager)
-- Loki
-- External Secrets Operator
-- ValidatingAdmissionPolicy
-
-약 5-10분 소요.
-
-### 4. Secrets 설정
+### 3. Secrets 설정
 
 ```bash
 make secrets
 ```
 
-인터랙티브 프롬프트로 Slack Bot Token, Signing Secret, MCP Token을 설정한다.
+인터랙티브 프롬프트로 Slack Bot Token, Signing Secret, MCP Token을 설정한다. MCP Token은 EKS MCP 서버 인증에 필요하므로 생략할 수 없다.
 
 Slack App은 [api.slack.com](https://api.slack.com/apps)에서 먼저 생성해야 한다:
 - Bot Token Scopes: `chat:write`, `commands`, `incoming-webhook`
@@ -117,6 +100,25 @@ Slack App은 [api.slack.com](https://api.slack.com/apps)에서 먼저 생성해�
 - Slash Commands: `/atdr`
 
 `slack_api_endpoint`는 `make infra-up` 출력에서 확인할 수 있다.
+
+### 4. Platform Up (Kubernetes 컴포넌트)
+
+```bash
+make platform-up
+```
+
+Helm으로 보안/관측 스택을 배포한다:
+- AWS Load Balancer Controller
+- Cilium + Hubble
+- Falco + custom rules
+- Tetragon + TracingPolicies
+- EKS MCP Server
+- kube-prometheus-stack (Prometheus + Grafana + Alertmanager)
+- Loki
+- External Secrets Operator
+- ValidatingAdmissionPolicy
+
+약 10-15분 소요. Docker daemon이 실행 중이어야 EKS MCP 이미지를 빌드/푸시할 수 있다.
 
 ### 5. Lambda 코드 배포
 
@@ -136,8 +138,7 @@ make status
 
 ```bash
 ./init.sh              # 최초 1회
-make all-up            # infra-up + platform-up
-make secrets           # Slack 시크릿 설정
+make all-up            # infra-up + secrets + platform-up
 make deploy-lambdas    # Lambda 코드 배포
 ```
 
@@ -157,7 +158,7 @@ make all-down
 | `make infra-down` | platform-down + terraform destroy |
 | `make platform-up` | Helm charts + K8s manifests 배포 |
 | `make platform-down` | Helm uninstall + manifest 삭제 |
-| `make all-up` | infra-up + platform-up |
+| `make all-up` | infra-up + secrets + platform-up + deploy-lambdas |
 | `make all-down` | platform-down + infra-down |
 | `make deploy-lambdas` | Lambda 함수 코드 업데이트 |
 | `make deploy-layer` | Lambda Layer 배포 |
@@ -233,7 +234,7 @@ make all-down
    └── AI 실패 시: Degraded 모드 (raw alert → Slack)
    │
 6. Pod 격리 순서
-   ├── Container Checkpoint (포렌식 증거 보존)
+   ├── MCP forensics snapshot (포렌식 증거 보존)
    ├── Tetragon SIGKILL label (아웃바운드 즉시 차단)
    ├── CiliumNetworkPolicy deny-all
    └── Pod 삭제 + Deployment scale 0
@@ -245,7 +246,7 @@ make all-down
 - **Prometheus**: ATDR 전용 alert rules (Falco critical, Tetragon policy violation, eBPF throttling, node memory)
 - **Loki**: 컨테이너 로그 수집 + 쿼리
 
-<!-- TODO: Grafana 대시보드 스크린샷 -->
+Grafana 접속 주소는 `make status`에서 확인한다.
 
 ## Security Hardening
 
@@ -269,14 +270,14 @@ make all-down
 | 4 | DNS 터널링 | T1071.004 |
 | 5 | 래터럴 무브먼트 | T1210 |
 
-<!-- TODO: 공격 시뮬레이션 실행 방법 문서화 -->
+공격 시뮬레이션 시나리오와 단계별 절차는 `docs/11-runbooks/`에 정리되어 있다.
 
 ## Development
 
 ```bash
 make lint          # ruff + yamllint + terraform fmt
 make lint-fix      # 자동 수정
-make test          # pytest (49 tests)
+make test          # pytest
 make build         # Lambda layer + 함수 패키징
 ```
 

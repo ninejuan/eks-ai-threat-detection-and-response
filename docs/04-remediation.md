@@ -51,35 +51,27 @@ Remediation Agent (LLM)
         ▼
    EKS MCP Server
         │
-        │  K8s API (in-cluster ServiceAccount 또는 IRSA)
+│  K8s API (in-cluster ServiceAccount + EKS Pod Identity)
         ▼
    EKS Control Plane
 ```
 
-MCP 서버는 EKS 클러스터 내부 또는 Lambda 환경에서 실행된다. IRSA(IAM Roles for Service Accounts)로 최소 권한 원칙을 적용한다.
+MCP 서버는 EKS 클러스터 내부에서 실행된다. AWS 권한이 필요한 경우 IRSA가 아니라 EKS Pod Identity를 사용하고, Kubernetes 권한은 ServiceAccount + RBAC로 제한한다. Lambda는 Kubernetes API, kubeconfig, `kubectl`을 직접 사용하지 않는다.
 
 ### MCP 도구 목록
 
 | 도구 이름 | 설명 | 필요 권한 |
 |----------|------|----------|
-| `list_pods` | 네임스페이스 내 파드 목록 조회 | `pods:list` |
-| `get_pod` | 특정 파드 상세 정보 조회 | `pods:get` |
 | `delete_pod` | 파드 삭제 (재시작 트리거) | `pods:delete` |
 | `label_pod` | 파드 레이블 추가/수정 (Tetragon 격리용) | `pods:patch` |
-| `checkpoint_pod` | Container Checkpoint 생성 → S3 저장 | `pods:checkpoint` |
+| `checkpoint_pod` | Pod 스냅샷/로그를 S3 포렌식 버킷에 저장 | `pods:get`, `pods/log:get`, `s3:PutObject` |
 | `apply_cilium_network_policy` | CiliumNetworkPolicy 생성 또는 수정 | `ciliumnetworkpolicies:create,update` |
-| `delete_cilium_network_policy` | CiliumNetworkPolicy 삭제 | `ciliumnetworkpolicies:delete` |
-| `get_cilium_network_policies` | 현재 적용된 CiliumNetworkPolicy 목록 | `ciliumnetworkpolicies:list` |
 | `patch_deployment` | Deployment 스펙 수정 (replicas 등) | `deployments:patch` |
 | `cordon_node` | 노드 스케줄링 비활성화 | `nodes:patch` |
 | `drain_node` | 노드 드레인 | `nodes:patch`, `pods:evict` |
-| `delete_cluster_role_binding` | ClusterRoleBinding 삭제 | `clusterrolebindings:delete` |
-| `patch_cluster_role_binding` | ClusterRoleBinding 수정 | `clusterrolebindings:patch` |
-| `rotate_secret` | Secret 값 갱신 | `secrets:update` |
-| `label_namespace` | 네임스페이스 레이블 추가/수정 | `namespaces:patch` |
-| `capture_hubble_flows` | Hubble 네트워크 플로우 캡처 → S3 저장 | Hubble API 접근 |
-| `apply_manifest` | 임의 K8s 매니페스트 적용 | 매니페스트 종류에 따라 다름 |
-| `get_events` | 네임스페이스 이벤트 조회 | `events:list` |
+| `capture_hubble_flows` | CiliumEndpoint/Hubble 증거 스냅샷을 S3에 저장 | `ciliumendpoints:list`, `s3:PutObject` |
+
+자동 대응 문서의 실행 예시는 MCP 호출을 기준으로 한다. `kubectl` 명령은 운영자 수동 검증 또는 break-glass 상황에만 사용한다.
 
 ---
 
@@ -102,9 +94,8 @@ MCP 서버는 EKS 클러스터 내부 또는 Lambda 환경에서 실행된다. I
 ```
 실행 순서:
 
-1. Container Checkpoint + Hubble 플로우 캡처 → S3 저장 (1-2초)
-   - 메모리 덤프, 파일시스템, 열린 소켓 전부 캡처
-   - 해당 Pod의 최근 30분 네트워크 플로우 저장
+1. MCP forensics snapshot 저장 (1-2초)
+   - Pod manifest, 최근 컨테이너 로그, CiliumEndpoint/Hubble 증거를 S3에 저장
 
 2. Tetragon SIGKILL label 적용 (< 100ms)
    - Pod에 security.incident/compromised=true 레이블 추가
@@ -118,19 +109,11 @@ MCP 서버는 EKS 클러스터 내부 또는 Lambda 환경에서 실행된다. I
    - Deployment가 새 Pod를 재생성하지 않도록 replicas=0
 ```
 
-**Step 1: Container Checkpoint + Hubble 캡처**
+**Step 1: MCP forensics snapshot**
 
-```bash
-# Container Checkpoint (K8s 1.35 beta)
-kubectl checkpoint pod payment-service-7d9f8b-xk2p9 -n production \
-  --container=payment-service \
-  --export-to=s3://atdr-forensics/checkpoints/inc-20260504-001/
-
-# Hubble 플로우 캡처
-hubble observe --pod production/payment-service-7d9f8b-xk2p9 \
-  --since=30m --output json > /tmp/hubble-flows.json
-aws s3 cp /tmp/hubble-flows.json \
-  s3://atdr-forensics/hubble/inc-20260504-001/flows.json
+```json
+{"tool":"checkpoint_pod","arguments":{"pod_name":"payment-service-7d9f8b-xk2p9","namespace":"production"}}
+{"tool":"capture_hubble_flows","arguments":{"pod_name":"payment-service-7d9f8b-xk2p9","namespace":"production"}}
 ```
 
 **Step 2: Tetragon SIGKILL label**
@@ -163,46 +146,21 @@ spec:
       - action: Sigkill
 ```
 
-```bash
-# Remediation Agent가 레이블 적용
-kubectl label pod payment-service-7d9f8b-xk2p9 -n production \
-  security.incident/compromised=true
+```json
+{"tool":"label_pod","arguments":{"pod_name":"payment-service-7d9f8b-xk2p9","namespace":"production","labels":{"security.incident/compromised":"true"}}}
 ```
 
 **Step 3: CiliumNetworkPolicy deny-all**
 
-```bash
-kubectl apply -f - <<EOF
-apiVersion: cilium.io/v2
-kind: CiliumNetworkPolicy
-metadata:
-  name: isolate-compromised-pod
-  namespace: production
-  labels:
-    atdr.juany.dev/managed: "true"
-    atdr.juany.dev/incident-id: "inc-20260504-001"
-spec:
-  endpointSelector:
-    matchLabels:
-      security.incident/compromised: "true"
-  ingressDeny:
-  - fromEndpoints:
-    - matchLabels: {}
-  egressDeny:
-  - toEndpoints:
-    - matchLabels: {}
-EOF
+```json
+{"tool":"apply_cilium_network_policy","arguments":{"policy_name":"isolate-compromised-pod","namespace":"production","pod_selector":{"security.incident/compromised":"true"},"deny_all":true}}
 ```
 
 **Step 4: Pod 삭제 + Deployment scale 0**
 
-```bash
-# Pod 강제 삭제
-kubectl delete pod payment-service-7d9f8b-xk2p9 -n production \
-  --grace-period=0 --force
-
-# Deployment가 새 Pod를 재생성하지 않도록 scale 0
-kubectl scale deployment payment-service -n production --replicas=0
+```json
+{"tool":"delete_pod","arguments":{"pod_name":"payment-service-7d9f8b-xk2p9","namespace":"production","force":true,"grace_period_seconds":0}}
+{"tool":"patch_deployment","arguments":{"deployment_name":"payment-service","namespace":"production","replicas":0}}
 ```
 
 **검증 방법**
