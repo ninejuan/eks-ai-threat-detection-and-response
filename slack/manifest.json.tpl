@@ -13,8 +13,8 @@
       {
         "command": "/atdr",
         "url": "${SLACK_API_URL}/slack/commands",
-        "description": "ATDR security system commands",
-        "usage_hint": "[status|incidents|help]"
+        "description": "ATDR security operations",
+        "usage_hint": "status | incidents [open|P1] | incident <id> | ack <id> | resolve <id> | oncall | report daily | ioc <id> | evidence <id> | help"
       }
     ]
   },
