@@ -49,16 +49,22 @@ platform-up:
 	@$(KCTL) rollout status deployment/aws-load-balancer-controller -n kube-system --timeout=120s
 	@echo "--- StorageClass (gp3) ---"
 	$(KCTL) apply -f kubernetes/storage/gp3-storageclass.yaml
-	@echo "--- Cilium + Hubble ---"
+	@echo "--- Cilium ENI mode ---"
+	@$(KCTL) -n kube-system patch daemonset aws-node --type='strategic' \
+		-p='{"spec":{"template":{"spec":{"nodeSelector":{"io.cilium/aws-node-enabled":"true"}}}}}'
 	$(HLM) upgrade --install cilium cilium/cilium \
 		-n kube-system \
-		--set cni.chainingMode=aws-cni \
-		--set cni.exclusive=false \
+		--set eni.enabled=true \
+		--set ipam.mode=eni \
+		--set routingMode=native \
+		--set enableIPv4Masquerade=false \
 		--set hubble.enabled=true \
 		--set hubble.relay.enabled=true \
-		--set hubble.ui.enabled=true \
-		--set operator.replicas=1
+		--set hubble.metrics.enabled="{flow,drop,tcp,dns}" \
+		--set operator.replicas=1 \
+		--set kubeProxyReplacement=true
 	@$(KCTL) rollout status daemonset/cilium -n kube-system --timeout=180s
+	@$(KCTL) rollout status deployment/cilium-operator -n kube-system --timeout=120s
 	@$(KCTL) rollout status deployment/hubble-relay -n kube-system --timeout=180s
 	@echo "--- Falco ---"
 	$(HLM) upgrade --install falco falcosecurity/falco \
@@ -80,6 +86,9 @@ platform-up:
 	done
 	@$(KCTL) wait --for=condition=Established crd/tracingpolicies.cilium.io --timeout=60s
 	$(KCTL) apply -f kubernetes/tetragon/tracing-policies.yaml
+	@echo "--- Tetragon SNS Forwarder ---"
+	@SNS_ARN=$$(cd $(TF_DIR) && terraform output -raw sns_topic_arn) && \
+		python3 -c 'from pathlib import Path; import sys; text=Path("kubernetes/tetragon/sns-forwarder.yaml").read_text(); print(text.replace("$${SNS_TOPIC_ARN}", sys.argv[1]).replace("$${AWS_REGION}", sys.argv[2]))' "$$SNS_ARN" "$(REGION)" | $(KCTL) apply -f -
 	@echo "--- External Secrets Operator ---"
 	$(HLM) upgrade --install external-secrets external-secrets/external-secrets \
 		-n external-secrets --create-namespace

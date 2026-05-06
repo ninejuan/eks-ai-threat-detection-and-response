@@ -59,6 +59,7 @@ resource "aws_eks_node_group" "general" {
   node_role_arn   = var.node_role_arn
   subnet_ids      = var.private_subnet_ids
 
+  ami_type       = "AL2023_x86_64_STANDARD"
   instance_types = ["t3.large"]
 
   scaling_config {
@@ -86,12 +87,13 @@ resource "aws_eks_node_group" "compute" {
   node_role_arn   = var.node_role_arn
   subnet_ids      = var.private_subnet_ids
 
+  ami_type       = "AL2023_x86_64_STANDARD"
   instance_types = ["c5.large"]
 
   scaling_config {
-    desired_size = 1
+    desired_size = 2
     min_size     = 0
-    max_size     = 2
+    max_size     = 3
   }
 
   labels = {
@@ -164,7 +166,7 @@ resource "aws_eks_access_policy_association" "admin" {
 resource "aws_eks_pod_identity_association" "falco" {
   cluster_name    = aws_eks_cluster.main.name
   namespace       = "falco"
-  service_account = "falcosidekick"
+  service_account = "falco-falcosidekick"
   role_arn        = var.falco_pod_role_arn
 }
 
@@ -194,4 +196,18 @@ resource "aws_eks_pod_identity_association" "aws_lb_controller" {
   namespace       = "kube-system"
   service_account = "aws-load-balancer-controller"
   role_arn        = var.aws_lb_controller_role_arn
+}
+
+resource "aws_eks_pod_identity_association" "cilium_operator" {
+  cluster_name    = aws_eks_cluster.main.name
+  namespace       = "kube-system"
+  service_account = "cilium-operator"
+  role_arn        = var.cilium_operator_role_arn
+}
+
+resource "aws_eks_pod_identity_association" "tetragon_forwarder" {
+  cluster_name    = aws_eks_cluster.main.name
+  namespace       = "tetragon"
+  service_account = "tetragon-sns-forwarder"
+  role_arn        = var.tetragon_forwarder_role_arn
 }

@@ -304,11 +304,21 @@ resource "aws_iam_role_policy" "falco_sns" {
 
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [{
-      Effect   = "Allow"
-      Action   = "sns:Publish"
-      Resource = "arn:aws:sns:${var.region}:${local.account_id}:${var.project}-falco-events"
-    }]
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = "sns:Publish"
+        Resource = "arn:aws:sns:${var.region}:${local.account_id}:${var.project}-falco-events"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "kms:GenerateDataKey",
+          "kms:Decrypt",
+        ]
+        Resource = "arn:aws:kms:${var.region}:${local.account_id}:key/*"
+      },
+    ]
   })
 }
 
@@ -327,6 +337,97 @@ resource "aws_iam_role" "falco_k8saudit" {
         "sts:TagSession",
       ]
     }]
+  })
+}
+
+resource "aws_iam_role" "cilium_operator" {
+  name = "${var.project}-cilium-operator"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Principal = {
+        Service = "pods.eks.amazonaws.com"
+      }
+      Action = [
+        "sts:AssumeRole",
+        "sts:TagSession",
+      ]
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "cilium_operator" {
+  name = "${var.project}-cilium-operator-eni"
+  role = aws_iam_role.cilium_operator.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Action = [
+        "ec2:CreateNetworkInterface",
+        "ec2:AttachNetworkInterface",
+        "ec2:DetachNetworkInterface",
+        "ec2:DeleteNetworkInterface",
+        "ec2:DescribeNetworkInterfaces",
+        "ec2:DescribeInstances",
+        "ec2:DescribeInstanceTypes",
+        "ec2:DescribeSubnets",
+        "ec2:DescribeVpcs",
+        "ec2:DescribeRouteTables",
+        "ec2:DescribeSecurityGroups",
+        "ec2:DescribeTags",
+        "ec2:AssignPrivateIpAddresses",
+        "ec2:UnassignPrivateIpAddresses",
+        "ec2:ModifyNetworkInterfaceAttribute",
+        "ec2:CreateTags",
+      ]
+      Resource = "*"
+    }]
+  })
+}
+
+resource "aws_iam_role" "tetragon_forwarder" {
+  name = "${var.project}-tetragon-forwarder"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Principal = {
+        Service = "pods.eks.amazonaws.com"
+      }
+      Action = [
+        "sts:AssumeRole",
+        "sts:TagSession",
+      ]
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "tetragon_forwarder" {
+  name = "${var.project}-tetragon-forwarder-sns"
+  role = aws_iam_role.tetragon_forwarder.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = "sns:Publish"
+        Resource = "arn:aws:sns:${var.region}:${local.account_id}:${var.project}-falco-events"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "kms:GenerateDataKey",
+          "kms:Decrypt",
+        ]
+        Resource = "arn:aws:kms:${var.region}:${local.account_id}:key/*"
+      },
+    ]
   })
 }
 

@@ -66,6 +66,8 @@ module "eks" {
   mcp_server_role_arn          = module.iam.mcp_server_role_arn
   aws_lb_controller_role_arn   = module.iam.aws_lb_controller_role_arn
   ebs_csi_role_arn             = module.iam.ebs_csi_role_arn
+  cilium_operator_role_arn     = module.iam.cilium_operator_role_arn
+  tetragon_forwarder_role_arn  = module.iam.tetragon_forwarder_role_arn
   vpc_id                       = module.vpc.vpc_id
   private_subnet_ids           = module.vpc.private_subnet_ids
   endpoint_public_access_cidrs = var.endpoint_public_access_cidrs
@@ -170,6 +172,26 @@ resource "aws_dynamodb_table" "approval_audit" {
 
   tags = {
     Name = "${var.project_name}-approval-audit"
+  }
+}
+
+resource "aws_dynamodb_table" "event_dedup" {
+  name         = "${var.project_name}-event-dedup"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "dedup_key"
+
+  attribute {
+    name = "dedup_key"
+    type = "S"
+  }
+
+  ttl {
+    attribute_name = "ttl"
+    enabled        = true
+  }
+
+  tags = {
+    Name = "${var.project_name}-event-dedup"
   }
 }
 

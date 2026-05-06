@@ -45,3 +45,11 @@ output "ebs_csi_role_arn" {
 output "mcp_server_role_arn" {
   value = aws_iam_role.mcp_server.arn
 }
+
+output "cilium_operator_role_arn" {
+  value = aws_iam_role.cilium_operator.arn
+}
+
+output "tetragon_forwarder_role_arn" {
+  value = aws_iam_role.tetragon_forwarder.arn
+}

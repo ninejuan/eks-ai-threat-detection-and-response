@@ -47,21 +47,18 @@ metadata:
   name: detect-sensitive-file-access
 spec:
   kprobes:
-    - call: fd_install
+    - call: security_file_open
       syscall: false
       args:
         - index: 0
-          type: int
-        - index: 1
           type: file
       selectors:
         - matchArgs:
-            - index: 1
+            - index: 0
               operator: Prefix
               values:
                 - /etc/shadow
-                - /etc/passwd
-                - /var/run/secrets/kubernetes.io
+                - /etc/gshadow
           matchActions:
             - action: Post
 ---

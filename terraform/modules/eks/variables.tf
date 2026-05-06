@@ -63,3 +63,13 @@ variable "ebs_csi_role_arn" {
   description = "IAM role ARN for EBS CSI Driver Pod Identity"
   type        = string
 }
+
+variable "cilium_operator_role_arn" {
+  description = "IAM role ARN for Cilium Operator Pod Identity (ENI mode)"
+  type        = string
+}
+
+variable "tetragon_forwarder_role_arn" {
+  description = "IAM role ARN for Tetragon SNS Forwarder Pod Identity"
+  type        = string
+}

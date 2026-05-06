@@ -124,6 +124,7 @@ resource "aws_lambda_function" "ingestor" {
   environment {
     variables = {
       STATE_MACHINE_ARN = aws_sfn_state_machine.agent_pipeline.arn
+      DEDUP_TABLE_NAME  = "${var.project}-event-dedup"
       PROJECT           = var.project
       LOG_LEVEL         = "INFO"
     }

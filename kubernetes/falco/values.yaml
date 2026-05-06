@@ -1,18 +1,30 @@
 driver:
   kind: modern_ebpf
 
+falco:
+  base_syscalls:
+    all: true
+    repair: true
+
 collectors:
   kubernetes:
+    enabled: false
+  containerEngine:
     enabled: true
+    pluginRef: ghcr.io/falcosecurity/plugins/plugin/container:0.6.3
 
 falcosidekick:
   enabled: true
+  image:
+    tag: 2.33.0
   config:
     aws:
+      checkidentity: false
       region: ap-northeast-2
       sns:
         topicarn: ""
         rawjson: false
+        minimumpriority: error
 
 serviceAccount:
   create: true
@@ -20,53 +32,72 @@ serviceAccount:
 
 customRules:
   atdr-rules.yaml: |-
-    - rule: Terminal shell in container
-      desc: A shell was used as the entrypoint/exec point into a container
+    - rule: Credential file access in container
+      desc: Sensitive credential file read in non-infrastructure container
       condition: >
-        spawned_process and container
-        and shell_procs and proc.tty != 0
-        and container_entrypoint
+        (evt.type in (open, openat, openat2) and evt.is_open_read = true)
+        and (fd.name = /etc/shadow or fd.name = /etc/gshadow)
+        and not k8s.ns.name in (kube-system, monitoring, external-secrets, falco, tetragon, atdr)
       output: >
-        Shell opened in container
-        (user=%user.name user_loginuid=%user.loginuid
-        shell=%proc.name parent=%proc.pname cmdline=%proc.cmdline
-        pid=%proc.pid terminal=%proc.tty container_id=%container.id
-        image=%container.image.repository)
-      priority: WARNING
-      tags: [container, shell, mitre_execution]
-
-    - rule: Outbound connection to crypto mining pool
-      desc: Detect outbound connections to known crypto mining pools
-      condition: >
-        outbound and fd.sip.name in (crypto_mining_pools)
-      output: >
-        Outbound connection to crypto mining pool
-        (user=%user.name command=%proc.cmdline pid=%proc.pid
-        connection=%fd.name container_id=%container.id
-        image=%container.image.repository)
-      priority: CRITICAL
-      tags: [network, crypto, mitre_impact, T1496]
-
-    - rule: Read sensitive file in container
-      desc: Sensitive file read in container (e.g., /etc/shadow, /etc/passwd)
-      condition: >
-        open_read and container
-        and (fd.name startswith /etc/shadow or fd.name startswith /etc/passwd)
-      output: >
-        Sensitive file read in container
+        Credential file accessed in container
         (user=%user.name command=%proc.cmdline file=%fd.name
+        pod=%k8s.pod.name ns=%k8s.ns.name
         container_id=%container.id image=%container.image.repository)
-      priority: WARNING
-      tags: [filesystem, mitre_credential_access]
+      priority: ERROR
+      tags: [filesystem, mitre_credential_access, T1003]
 
-    - rule: Sensitive mount detected
-      desc: Container started with sensitive host path mount
+    - rule: Suspicious network tool in container
+      desc: Network tool launched in non-infrastructure container
       condition: >
         spawned_process and container
-        and proc.name in (mount, umount)
+        and (proc.name in (nmap, socat, tcpdump, tshark, mitmproxy)
+             or proc.exepath in (/usr/bin/ncat, /usr/bin/netcat, /usr/local/bin/ncat))
+        and not k8s.ns.name in (kube-system, monitoring, external-secrets, falco, tetragon, atdr)
       output: >
-        Sensitive mount operation in container
+        Suspicious network tool launched
         (user=%user.name command=%proc.cmdline
+        pod=%k8s.pod.name ns=%k8s.ns.name
         container_id=%container.id image=%container.image.repository)
-      priority: WARNING
-      tags: [container, mount, mitre_privilege_escalation]
+      priority: ERROR
+      tags: [network, tools, mitre_discovery, T1046]
+
+    - rule: Crypto mining process detected
+      desc: Known crypto mining binary executed in container
+      condition: >
+        spawned_process and container
+        and proc.name in (xmrig, minerd, minergate, cpuminer, ethminer, cgminer, bfgminer, t-rex, nbminer, phoenixminer)
+      output: >
+        Crypto mining process detected
+        (user=%user.name command=%proc.cmdline
+        pod=%k8s.pod.name ns=%k8s.ns.name
+        container_id=%container.id image=%container.image.repository)
+      priority: CRITICAL
+      tags: [crypto, mitre_impact, T1496]
+
+    - rule: Container escape via nsenter
+      desc: nsenter used to escape container namespace
+      condition: >
+        spawned_process and container
+        and proc.name = nsenter
+      output: >
+        Container escape attempt via nsenter
+        (user=%user.name command=%proc.cmdline
+        pod=%k8s.pod.name ns=%k8s.ns.name
+        container_id=%container.id image=%container.image.repository)
+      priority: CRITICAL
+      tags: [container, escape, mitre_privilege_escalation, T1611]
+
+    - rule: Binary modified in running container
+      desc: Write to binary directory in running container indicates compromise
+      condition: >
+        open_write and container
+        and (fd.name startswith /bin/ or fd.name startswith /usr/bin/ or fd.name startswith /sbin/)
+        and not container.image.repository contains "ebs-csi"
+        and not container.image.repository contains "efs-csi"
+      output: >
+        Binary file modified in container
+        (user=%user.name command=%proc.cmdline file=%fd.name
+        pod=%k8s.pod.name ns=%k8s.ns.name
+        container_id=%container.id image=%container.image.repository)
+      priority: CRITICAL
+      tags: [filesystem, mitre_persistence, T1554]
