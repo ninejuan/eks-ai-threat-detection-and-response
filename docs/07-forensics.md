@@ -41,6 +41,63 @@ S3 Object Lock 저장 (타임스탬프 + SHA-256)
 
 분석 시에는 원본 데이터를 직접 사용하지 않는다. S3에서 별도 버킷으로 복사한 후 읽기 전용으로 분석한다. 원본 버킷의 Object Lock 설정은 분석 과정에서도 유지된다.
 
+### 포렌식 심도 계층
+
+ATDR의 포렌식 전략은 모든 환경에서 안정적으로 동작하는 기본 경로와, 더 깊은 분석을 제공하는 선택 경로를 분리한다. 핵심 대응 경로는 특정 노드 런타임 기능에 의존하지 않아야 하며, 고급 포렌식 기능이 실패해도 증거 수집과 대응 흐름은 계속 진행되어야 한다.
+
+| 계층 | 이름 | 목적 | 기본 상태 | 실패 시 처리 |
+|------|------|------|-----------|--------------|
+| Core | Evidence Bundle | 런타임/네트워크/컨트롤 플레인 증거를 안정적으로 수집 | 항상 실행 | 실패 항목을 manifest에 기록하고 가능한 증거로 계속 진행 |
+| Core | Forensic Synthesis | 수집 증거를 AI가 타임라인, IOC, TTP, 대응 근거로 재구성 | 항상 실행 | 누락 증거를 명시하고 부분 리포트 생성 |
+| Advanced | Ephemeral Container Live Forensics | 실행 중인 파드의 프로세스/네트워크/파일 상태를 제한된 프로파일로 수집 | 승인 기반 선택 실행 | 미지원/실패 사유를 기록하고 Core evidence로 fallback |
+| Experimental | CRIU Container Checkpoint | 지원 노드에서 컨테이너 메모리/프로세스 상태를 checkpoint로 보존 | 명시적 승인 기반 실험 기능 | `unsupported` 또는 실패 사유를 기록하고 live forensics/Core evidence로 fallback |
+
+이 계층화의 목적은 CRIU 같은 고위험 기능을 핵심 성공 조건으로 만들지 않는 것이다. ATDR의 기본 완성도는 Evidence Bundle과 Forensic Synthesis에서 확보하고, CRIU는 호환 노드에서 더 깊은 보존을 제공하는 선택 기능으로 다룬다.
+
+### Evidence-aware Remediation 순서
+
+파드를 삭제하거나 노드를 드레인하는 조치는 증거를 훼손할 수 있다. 따라서 destructive action은 반드시 현재 인시던트의 증거 수집 상태를 확인한 뒤 실행한다.
+
+```
+탐지
+  → 최소 격리/오염 라벨
+  → Core Evidence Bundle 수집
+  → Forensic Synthesis Agent 분석
+  → 승인
+  → 격리/삭제/드레인 등 대응 실행
+  → 사후 리포트
+```
+
+`delete_pod`, `patch_deployment(replicas=0)`, `apply_cilium_network_policy`, `cordon_node`, `drain_node` 같은 조치는 SYSTEM_PROMPT만 믿지 않는다. Step Functions 또는 Remediation handler에서 현재 `execution_log`를 확인해 필수 증거 수집이 성공했거나, 운영자가 명시적으로 우회 승인한 경우에만 실행한다.
+
+### Forensic Synthesis Agent
+
+증거를 많이 저장하는 것만으로는 분석 자동화가 완성되지 않는다. ATDR은 수집된 증거를 AI가 읽고, 사람이 검토 가능한 분석 산출물로 재구성하는 Forensic Synthesis Agent를 둔다.
+
+입력 증거는 다음을 포함한다.
+
+- 원본 탐지 이벤트(Falco, Tetragon, GuardDuty)
+- Pod/Deployment/ReplicaSet/ServiceAccount 메타데이터
+- 컨테이너 로그와 Kubernetes 이벤트
+- Tetragon 프로세스/파일/네트워크 이벤트
+- Hubble/Cilium flow
+- EKS audit log / CloudTrail 이벤트
+- Remediation execution log
+- 선택적으로 live forensic snapshot 또는 CRIU checkpoint metadata
+
+출력 산출물은 S3 evidence bundle 아래에 저장한다.
+
+```text
+incidents/{incident_id}/ai/
+├── synthesis-report.md
+├── timeline.json
+├── iocs.json
+├── ttps.json
+└── remediation-rationale.json
+```
+
+리포트는 추측만 쓰지 않는다. 각 판단에는 어떤 증거 파일, 이벤트 ID, 시간 범위를 근거로 삼았는지 citation을 붙인다.
+
 ---
 
 ## 2. 불변 로그 저장 (S3 Object Lock)
@@ -48,6 +105,19 @@ S3 Object Lock 저장 (타임스탬프 + SHA-256)
 ### 설계 원칙
 
 모든 보안 이벤트 원본은 S3 Object Lock이 활성화된 버킷에 저장한다. GOVERNANCE 모드를 사용해 일반 사용자는 삭제할 수 없고, 특별 권한을 가진 관리자만 잠금을 해제할 수 있다.
+
+### 왜 GOVERNANCE 모드를 쓰는가
+
+S3 Object Lock은 `GOVERNANCE`와 `COMPLIANCE` 두 가지 모드를 지원한다. ATDR은 **GOVERNANCE**를 선택한다.
+
+| 모드 | 설명 | ATDR 적합성 |
+|------|------|------|
+| COMPLIANCE | 루트 사용자도 retention 해제 불가. 보존 기간이 끝날 때까지 어떤 방법으로도 삭제할 수 없다. | ❌ 데모/스테이징 환경에서 `make infra-down` → `make infra-up` 같은 반복 teardown이 불가능해진다. 버킷 자체를 지울 수 없어 Terraform destroy가 영구 실패한다. |
+| GOVERNANCE | `s3:BypassGovernanceRetention` 권한을 가진 특별 사용자(관리자)만 retention을 해제할 수 있다. 일반 사용자는 여전히 삭제 불가. | ✅ 평시 불변성은 유지하되, 환경 재구성(`infra-down`)이 가능하다. `make infra-down-preflight`가 bypass 권한으로 객체를 드레인한 뒤 버킷을 파괴한다. |
+
+실운영 환경에서는 COMPLIANCE가 권장되는 경우가 많지만, ATDR은 평가·데모·재현 환경까지 같은 Terraform/Makefile로 관리한다는 전제 하에 **GOVERNANCE + 관리자 bypass**로 균형을 잡는다. 이 결정은 Makefile의 `infra-down-preflight` target이 `aws s3api delete-object --bypass-governance-retention`으로 버킷을 비우는 동작과 짝을 이룬다.
+
+일반 Lambda/MCP ServiceRole에는 bypass 권한을 부여하지 않는다. 인시던트 대응 중 실수나 LLM 환각으로 증거가 삭제될 위험은 여전히 막힌다.
 
 ```
 이벤트 원본 데이터
@@ -378,13 +448,26 @@ ORDER BY eventTime DESC;
 
 ---
 
-## 4. 컨테이너 체크포인트 (Container Checkpoint)
+## 4. 실험적 컨테이너 체크포인트 (Experimental Container Checkpoint)
 
 ### 개요
 
-Kubernetes 1.35에서 beta로 승격된 Container Checkpoint 기능을 사용해 의심스러운 컨테이너의 메모리 상태를 스냅샷으로 저장한다. 컨테이너를 종료하지 않고 실행 중인 상태 그대로 캡처할 수 있어 휘발성 증거(메모리 내 악성코드, 네트워크 연결 상태, 프로세스 트리)를 보존하는 데 유용하다.
+컨테이너 체크포인트는 의심스러운 컨테이너의 메모리와 프로세스 상태를 보존할 수 있는 고급 포렌식 기능이다. 성공하면 일반 로그나 이벤트만으로는 확인하기 어려운 휘발성 증거(메모리 내 payload, 열린 파일 디스크립터, 프로세스 상태)를 남길 수 있다.
 
-### Feature Gate 활성화
+다만 EKS에서 CRIU 기반 체크포인트는 노드 OS, containerd/CRI 설정, kubelet feature gate, 권한 모델에 강하게 의존한다. 따라서 ATDR은 이 기능을 기본 대응 경로가 아니라 **명시적 승인 기반 Experimental mode**로 제공한다. 체크포인트 실패는 인시던트 대응 실패가 아니며, 시스템은 실패 사유를 기록하고 Evidence Bundle / Ephemeral Container Live Forensics 경로로 fallback한다.
+
+### 설계 원칙
+
+| 원칙 | 설명 |
+|------|------|
+| 선택 실행 | CRIU checkpoint는 항상 명시적 승인 후 실행한다. 자동 삭제/격리 경로의 필수 조건으로 만들지 않는다. |
+| 호환성 감지 | 노드가 checkpoint API, CRIU, containerd 지원을 제공하는지 먼저 확인한다. |
+| 안전한 실패 | 미지원 노드에서는 `status=unsupported`와 원인을 반환하고 live forensics로 fallback한다. |
+| 원본 보존 | checkpoint tarball과 metadata는 Object Lock이 걸린 S3 forensics bucket에 저장한다. |
+| 복원 비필수 | MVP는 생성과 보존까지로 제한한다. 복원 분석은 별도 sandbox 기능으로 다룬다. |
+| 민감정보 주의 | checkpoint는 메모리와 secret을 포함할 수 있으므로 저장, 접근, 공개 샘플을 엄격히 제한한다. |
+
+### 호환 노드 준비
 
 ```yaml
 # k8s/base/node-config/kubelet-config.yaml
@@ -395,7 +478,7 @@ featureGates:
 containerRuntimeEndpoint: unix:///run/containerd/containerd.sock
 ```
 
-EKS 관리형 노드 그룹에서는 Launch Template의 UserData로 kubelet 설정을 주입한다:
+EKS 관리형 노드 그룹에서 시도하는 경우 별도 forensics-enabled 노드 그룹을 둔다. 일반 워크로드 노드 그룹을 직접 변경하지 않고, taint/toleration으로 테스트 워크로드만 스케줄링한다.
 
 ```bash
 #!/bin/bash
@@ -405,7 +488,7 @@ EKS 관리형 노드 그룹에서는 Launch Template의 UserData로 kubelet 설�
 
 ### 체크포인트 생성 및 S3 저장
 
-체크포인트는 kubelet API를 직접 호출해 생성한다. 생성된 체크포인트 파일은 노드의 `/var/lib/kubelet/checkpoints/` 에 저장된다.
+체크포인트는 호환 노드에서만 kubelet checkpoint API를 통해 생성한다. 생성된 체크포인트 파일은 노드의 `/var/lib/kubelet/checkpoints/` 에 저장된다. 운영 경로에서는 Lambda가 kubelet이나 Kubernetes API를 직접 호출하지 않으며, 요청은 반드시 EKS MCP 서버를 경유한다.
 
 ```python
 # apps/forensics-agent/checkpoint.py
@@ -531,9 +614,9 @@ crictl exec <container-id> netstat -an
 crictl exec <container-id> find /tmp -newer /etc/passwd -type f
 ```
 
-### Falco 연동: 의심 이벤트 시 자동 체크포인트
+### Falco 연동: 의심 이벤트 시 체크포인트 후보 생성
 
-Falco 이벤트가 발생하면 Falcosidekick이 웹훅으로 forensics-agent를 호출해 자동으로 체크포인트를 생성한다.
+Falco 이벤트가 발생하면 즉시 체크포인트를 생성하지 않는다. 대신 이벤트를 기반으로 `checkpoint_container_experimental` 실행 후보를 만들고 Slack 승인 또는 정책 승인을 기다린다. CRIU checkpoint는 노드 호환성과 민감정보 위험이 크기 때문에 자동 실행 기본값으로 두지 않는다.
 
 ```yaml
 # k8s/base/falco/falcosidekick-values.yaml (추가)
@@ -576,12 +659,12 @@ async def handle_falco_event(request: Request):
     if not all([namespace, pod, container]):
         return {"status": "skipped", "reason": "missing pod info"}
 
-    # 비동기로 체크포인트 생성 (Falco 응답 블로킹 방지)
+    # 비동기로 체크포인트 후보 생성 (Falco 응답 블로킹 방지)
     asyncio.create_task(
-        create_checkpoint_async(namespace, pod, container, incident_id)
+        propose_checkpoint_async(namespace, pod, container, incident_id)
     )
 
-    return {"status": "checkpoint_initiated", "incident_id": incident_id}
+    return {"status": "checkpoint_proposed", "incident_id": incident_id}
 ```
 
 ---
