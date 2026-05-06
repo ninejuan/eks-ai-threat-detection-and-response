@@ -177,6 +177,24 @@ REMEDIATION_TOOLS = [
         },
     },
     {
+        "name": "checkpoint_container_experimental",
+        "description": (
+            "EXPERIMENTAL. Attempt a CRIU-based container checkpoint through the kubelet "
+            "/checkpoint endpoint. Requires a node with ContainerCheckpoint feature gate + CRIU + "
+            "containerd checkpoint support. On unsupported nodes returns status='unsupported' with "
+            "a fallback_recommendation; this is expected and does not indicate an incident failure."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "pod_name": {"type": "string"},
+                "namespace": {"type": "string"},
+                "container_name": {"type": "string"},
+            },
+            "required": ["pod_name", "namespace"],
+        },
+    },
+    {
         "name": "cordon_node",
         "description": "Mark a node as unschedulable",
         "input_schema": {

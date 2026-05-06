@@ -731,6 +731,237 @@ def _read_ephemeral_container_logs(pod_name: str, namespace: str, container_name
         return "", f"log_fetch_failed: {error.reason}"
 
 
+CHECKPOINT_SERVICEACCOUNT_TOKEN_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/token"  # noqa: S105
+CHECKPOINT_KUBELET_CA_PATH = os.environ.get("KUBELET_CA_PATH", "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt")
+CHECKPOINT_KUBELET_PORT = int(os.environ.get("KUBELET_PORT", "10250"))
+CHECKPOINT_KUBELET_TIMEOUT = int(os.environ.get("KUBELET_CHECKPOINT_TIMEOUT", "120"))
+
+
+def checkpoint_container_experimental(
+    pod_name: str,
+    namespace: str,
+    container_name: str | None = None,
+    incident_id: str | None = None,
+) -> dict:
+    safe_pod = _sanitize_k8s_dns_name(pod_name)
+    safe_ns = _sanitize_k8s_dns_name(namespace)
+    if not safe_pod or not safe_ns:
+        return _failure(
+            "checkpoint_container_experimental",
+            "pod_name/namespace contain invalid K8s characters",
+        )
+
+    try:
+        pod = CORE.read_namespaced_pod(name=safe_pod, namespace=safe_ns)
+    except ApiException as error:
+        return _checkpoint_result(
+            status="unsupported",
+            reason=f"pod_read_failed:{error.reason}",
+            pod_name=safe_pod,
+            namespace=safe_ns,
+            container=container_name,
+            node=None,
+            incident_id=incident_id,
+            fallback_recommendation="collect_live_pod_forensics",
+        )
+
+    selected_container = container_name or (pod.spec.containers[0].name if pod.spec.containers else "")
+    node_name = pod.spec.node_name or ""
+    if not selected_container or not node_name:
+        return _checkpoint_result(
+            status="unsupported",
+            reason="pod_not_scheduled_or_has_no_containers",
+            pod_name=safe_pod,
+            namespace=safe_ns,
+            container=selected_container,
+            node=node_name,
+            incident_id=incident_id,
+            fallback_recommendation="collect_live_pod_forensics",
+        )
+
+    node_ip = _node_internal_ip(node_name)
+    if not node_ip:
+        return _checkpoint_result(
+            status="unsupported",
+            reason=f"node_internal_ip_unavailable:{node_name}",
+            pod_name=safe_pod,
+            namespace=safe_ns,
+            container=selected_container,
+            node=node_name,
+            incident_id=incident_id,
+            fallback_recommendation="collect_live_pod_forensics",
+        )
+
+    status, reason, archive_path, http_status = _kubelet_checkpoint_request(
+        node_ip=node_ip,
+        namespace=safe_ns,
+        pod_name=safe_pod,
+        container_name=selected_container,
+    )
+
+    return _checkpoint_result(
+        status=status,
+        reason=reason,
+        pod_name=safe_pod,
+        namespace=safe_ns,
+        container=selected_container,
+        node=node_name,
+        incident_id=incident_id,
+        fallback_recommendation="collect_live_pod_forensics" if status != "success" else None,
+        archive_path=archive_path,
+        http_status=http_status,
+        node_ip=node_ip,
+    )
+
+
+def _node_internal_ip(node_name: str) -> str:
+    try:
+        node = CORE.read_node(name=node_name)
+    except ApiException as error:
+        logger.warning("node read failed for %s: %s", node_name, error.reason)
+        return ""
+    addresses = getattr(node.status, "addresses", None) or []
+    for addr in addresses:
+        address_type = getattr(addr, "type", "")
+        if address_type == "InternalIP":
+            return getattr(addr, "address", "") or ""
+    return ""
+
+
+def _kubelet_checkpoint_request(
+    node_ip: str,
+    namespace: str,
+    pod_name: str,
+    container_name: str,
+) -> tuple[str, str, str | None, int | None]:
+    import http.client as _http
+    import ssl as _ssl
+
+    try:
+        with open(CHECKPOINT_SERVICEACCOUNT_TOKEN_PATH, encoding="utf-8") as handle:
+            token = handle.read().strip()
+    except OSError as error:
+        return "unsupported", f"sa_token_unavailable:{error}", None, None
+
+    if not os.path.exists(CHECKPOINT_KUBELET_CA_PATH):
+        return "unsupported", f"kubelet_ca_missing:{CHECKPOINT_KUBELET_CA_PATH}", None, None
+
+    ssl_ctx = _ssl.create_default_context(cafile=CHECKPOINT_KUBELET_CA_PATH)
+    ssl_ctx.check_hostname = False
+
+    path = f"/checkpoint/{namespace}/{pod_name}/{container_name}"
+    body: str | None = None
+    status_code: int | None = None
+    try:
+        conn = _http.HTTPSConnection(
+            node_ip, CHECKPOINT_KUBELET_PORT, timeout=CHECKPOINT_KUBELET_TIMEOUT, context=ssl_ctx
+        )
+        conn.request("POST", path, headers={"Authorization": f"Bearer {token}"})
+        response = conn.getresponse()
+        status_code = response.status
+        body = response.read().decode("utf-8", errors="replace")
+        conn.close()
+    except (OSError, _http.HTTPException) as error:
+        return "unsupported", f"kubelet_unreachable:{type(error).__name__}:{error}", None, status_code
+
+    status, reason, archive_path = _interpret_kubelet_checkpoint_response(status_code, body)
+    return status, reason, archive_path, status_code
+
+
+_KUBELET_CHECKPOINT_STATUS_MAP: dict[int, tuple[str, str]] = {
+    401: ("unsupported", "kubelet_unauthorized_missing_checkpoint_rbac"),
+    403: ("unsupported", "kubelet_forbidden_checkpoint_rbac"),
+    404: ("unsupported", "checkpoint_feature_gate_disabled_or_not_found"),
+}
+
+
+def _interpret_kubelet_checkpoint_response(status_code: int | None, body: str | None) -> tuple[str, str, str | None]:
+    if status_code == 200:
+        return _parse_kubelet_checkpoint_200(body)
+    if status_code == 500:
+        return "unsupported", f"kubelet_runtime_error:{(body or '').strip()[:200]}", None
+    if status_code is None:
+        return "unsupported", "kubelet_no_response", None
+    mapped = _KUBELET_CHECKPOINT_STATUS_MAP.get(status_code)
+    if mapped is not None:
+        return mapped[0], mapped[1], None
+    return "unsupported", f"unexpected_status:{status_code}", None
+
+
+def _parse_kubelet_checkpoint_200(body: str | None) -> tuple[str, str, str | None]:
+    try:
+        parsed = json.loads(body or "{}")
+    except json.JSONDecodeError:
+        return "success", "checkpoint_created_unparseable_response", None
+    items = parsed.get("items")
+    if isinstance(items, list) and items:
+        return "success", "checkpoint_created", str(items[0])
+    return "success", "checkpoint_created_no_items", None
+
+
+def _checkpoint_result(
+    status: str,
+    reason: str,
+    pod_name: str,
+    namespace: str,
+    container: str | None,
+    node: str | None,
+    incident_id: str | None,
+    fallback_recommendation: str | None = None,
+    archive_path: str | None = None,
+    http_status: int | None = None,
+    node_ip: str | None = None,
+) -> dict:
+    payload = {
+        "captured_at": datetime.now(tz=UTC).isoformat(),
+        "kind": "container_checkpoint_attempt",
+        "incident_id": _sanitize_incident_id(incident_id),
+        "pod_name": pod_name,
+        "namespace": namespace,
+        "container": container or "",
+        "node_name": node or "",
+        "node_ip": node_ip or "",
+        "attempt_status": status,
+        "attempt_reason": reason,
+        "kubelet_http_status": http_status,
+        "archive_path_on_node": archive_path,
+        "fallback_recommendation": fallback_recommendation,
+    }
+
+    evidence: dict | None = None
+    if incident_id:
+        bucket, key = _forensics_destination("container-checkpoint-attempt", pod_name, incident_id)
+        evidence = _put_forensics_json(
+            bucket,
+            key,
+            payload,
+            incident_id=incident_id,
+            kind="container_checkpoint_attempt",
+        )
+
+    base = {"action": "checkpoint_container_experimental"}
+    if status == "success":
+        base["status"] = "success"
+    else:
+        base["status"] = "unsupported"
+        base["error"] = reason
+    base.update(
+        {
+            "pod": pod_name,
+            "namespace": namespace,
+            "container": container or "",
+            "node_name": node or "",
+            "node_ip": node_ip or "",
+            "kubelet_http_status": http_status,
+            "archive_path_on_node": archive_path,
+            "fallback_recommendation": fallback_recommendation,
+            "evidence_uri": (evidence or {}).get("uri"),
+            "evidence_sha256": (evidence or {}).get("sha256"),
+        }
+    )
+    return base
+
+
 def _hex_suffix() -> str:
     return secrets.token_hex(6)
 
@@ -771,6 +1002,7 @@ TOOLS = {
     "collect_tetragon_timeline": collect_tetragon_timeline,
     "collect_audit_events": collect_audit_events,
     "collect_live_pod_forensics": collect_live_pod_forensics,
+    "checkpoint_container_experimental": checkpoint_container_experimental,
 }
 
 

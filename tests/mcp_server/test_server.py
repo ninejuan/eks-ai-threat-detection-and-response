@@ -638,3 +638,109 @@ def test_collect_live_pod_forensics_reports_watchdog_timeout(server_module, monk
     assert result["status"] == "success"
     assert result["terminated"] is False
     assert result["exit_reason"] == "watchdog_timeout"
+
+
+def test_checkpoint_container_experimental_success(server_module, monkeypatch):
+    node_addr = SimpleNamespace(type="InternalIP", address="10.0.1.50")
+    pod = SimpleNamespace(
+        spec=SimpleNamespace(
+            containers=[SimpleNamespace(name="app")],
+            node_name="node-a",
+        ),
+    )
+    node = SimpleNamespace(status=SimpleNamespace(addresses=[node_addr]))
+
+    class CoreApi:
+        def read_namespaced_pod(self, name, namespace):
+            return pod
+
+        def read_node(self, name):
+            return node
+
+    monkeypatch.setattr(server_module, "CORE", CoreApi())
+    monkeypatch.setattr(
+        server_module,
+        "_kubelet_checkpoint_request",
+        lambda **_kwargs: ("success", "checkpoint_created", "/var/lib/kubelet/checkpoints/checkpoint.tar", 200),
+    )
+
+    put_calls = []
+
+    class S3Client:
+        def put_object(self, **kwargs):
+            put_calls.append(kwargs)
+
+    monkeypatch.setattr(server_module, "S3", S3Client())
+
+    result = server_module.checkpoint_container_experimental(
+        pod_name="attacker", namespace="atdr-test", incident_id="inc-2026-criu"
+    )
+    assert result["status"] == "success"
+    assert result["archive_path_on_node"] == "/var/lib/kubelet/checkpoints/checkpoint.tar"
+    assert result["node_ip"] == "10.0.1.50"
+    assert result["fallback_recommendation"] is None
+
+    evidence_call = next(call for call in put_calls if "/evidence.json" in call["Key"])
+    payload = json.loads(evidence_call["Body"].decode("utf-8"))
+    assert payload["attempt_status"] == "success"
+    assert payload["kubelet_http_status"] == 200
+
+
+def test_checkpoint_container_experimental_reports_unsupported(server_module, monkeypatch):
+    node_addr = SimpleNamespace(type="InternalIP", address="10.0.1.50")
+    pod = SimpleNamespace(
+        spec=SimpleNamespace(
+            containers=[SimpleNamespace(name="app")],
+            node_name="node-a",
+        ),
+    )
+    node = SimpleNamespace(status=SimpleNamespace(addresses=[node_addr]))
+
+    class CoreApi:
+        def read_namespaced_pod(self, name, namespace):
+            return pod
+
+        def read_node(self, name):
+            return node
+
+    monkeypatch.setattr(server_module, "CORE", CoreApi())
+    monkeypatch.setattr(
+        server_module,
+        "_kubelet_checkpoint_request",
+        lambda **_kwargs: ("unsupported", "checkpoint_feature_gate_disabled_or_not_found", None, 404),
+    )
+
+    result = server_module.checkpoint_container_experimental(pod_name="attacker", namespace="atdr-test")
+
+    assert result["status"] == "unsupported"
+    assert "checkpoint_feature_gate_disabled_or_not_found" in result["error"]
+    assert result["kubelet_http_status"] == 404
+    assert result["fallback_recommendation"] == "collect_live_pod_forensics"
+
+
+def test_checkpoint_container_experimental_handles_unscheduled_pod(server_module, monkeypatch):
+    pod = SimpleNamespace(spec=SimpleNamespace(containers=[SimpleNamespace(name="app")], node_name=""))
+
+    class CoreApi:
+        def read_namespaced_pod(self, name, namespace):
+            return pod
+
+    monkeypatch.setattr(server_module, "CORE", CoreApi())
+
+    result = server_module.checkpoint_container_experimental(pod_name="attacker", namespace="atdr-test")
+
+    assert result["status"] == "unsupported"
+    assert "pod_not_scheduled_or_has_no_containers" in result["error"]
+
+
+def test_interpret_kubelet_checkpoint_response_maps_statuses(server_module):
+    cases = [
+        (200, '{"items":["/path/a.tar"]}', ("success", "checkpoint_created", "/path/a.tar")),
+        (401, "", ("unsupported", "kubelet_unauthorized_missing_checkpoint_rbac", None)),
+        (403, "", ("unsupported", "kubelet_forbidden_checkpoint_rbac", None)),
+        (404, "", ("unsupported", "checkpoint_feature_gate_disabled_or_not_found", None)),
+        (502, "", ("unsupported", "unexpected_status:502", None)),
+        (None, None, ("unsupported", "kubelet_no_response", None)),
+    ]
+    for status_code, body, expected in cases:
+        assert server_module._interpret_kubelet_checkpoint_response(status_code, body) == expected

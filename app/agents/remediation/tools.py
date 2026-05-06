@@ -21,6 +21,7 @@ ALLOWED_TOOLS = {
     "collect_tetragon_timeline",
     "collect_audit_events",
     "collect_live_pod_forensics",
+    "checkpoint_container_experimental",
 }
 
 _warmed_up = False
@@ -74,6 +75,7 @@ INCIDENT_AWARE_TOOLS = frozenset(
         "collect_tetragon_timeline",
         "collect_audit_events",
         "collect_live_pod_forensics",
+        "checkpoint_container_experimental",
     }
 )
 
