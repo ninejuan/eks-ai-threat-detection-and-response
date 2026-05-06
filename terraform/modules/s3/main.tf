@@ -50,7 +50,7 @@ resource "aws_s3_bucket_object_lock_configuration" "forensics" {
 
   rule {
     default_retention {
-      mode = "COMPLIANCE"
+      mode = "GOVERNANCE"
       days = 90
     }
   }

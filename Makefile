@@ -1,5 +1,6 @@
 CLUSTER_NAME ?= atdr-demo
 REGION       ?= ap-northeast-2
+PROJECT      ?= atdr
 AWS_ACCOUNT  ?= $(shell aws sts get-caller-identity --query Account --output text 2>/dev/null)
 MCP_IMAGE_TAG ?= $(shell git rev-parse --short HEAD 2>/dev/null || date +%Y%m%d%H%M%S)
 TF_DIR       := terraform/envs/demo
@@ -8,7 +9,7 @@ HLM          := helm --kube-context $(CLUSTER_NAME)
 LAMBDA_MOD   := terraform/modules/lambda
 LAYER_DIR    := build/layer/python
 
-.PHONY: infra-up infra-down platform-up platform-down deploy-lambdas deploy-layer \
+.PHONY: infra-up infra-down infra-down-preflight platform-up platform-down deploy-lambdas deploy-layer \
         all-up all-down status lint lint-fix test build build-layer build-lambdas build-mcp \
         sync-runbooks create-opensearch-index create-kb kb-sync \
         secrets scale-down scale-up scale-status backup-db clean slack-manifest
@@ -21,8 +22,57 @@ infra-up: build
 	@echo "Context created: $(CLUSTER_NAME)"
 	@$(MAKE) -s slack-manifest
 
-infra-down:
-	cd $(TF_DIR) && terraform destroy -auto-approve
+infra-down: infra-down-preflight
+	cd $(TF_DIR) && terraform destroy -auto-approve || { \
+		echo ""; \
+		echo "=== destroy failed; retrying after dropping forensics bucket from state ==="; \
+		echo "(Forensics bucket uses GOVERNANCE mode; preflight drained via bypass-governance-retention.)"; \
+		cd $(TF_DIR) && \
+			terraform state rm module.s3.aws_s3_bucket.forensics 2>/dev/null; \
+			terraform state rm module.s3.aws_s3_bucket_versioning.forensics 2>/dev/null; \
+			terraform state rm module.s3.aws_s3_bucket_server_side_encryption_configuration.forensics 2>/dev/null; \
+			terraform state rm module.s3.aws_s3_bucket_object_lock_configuration.forensics 2>/dev/null; \
+			terraform state rm module.s3.aws_s3_bucket_public_access_block.forensics 2>/dev/null; \
+			terraform destroy -auto-approve; \
+	}
+
+infra-down-preflight:
+	@echo "=== Emptying ECR repository $(PROJECT)/eks-mcp-server ==="
+	@REPO="$(PROJECT)/eks-mcp-server"; \
+	DIGESTS=$$(aws ecr list-images --repository-name $$REPO --region $(REGION) \
+		--query 'imageIds[].imageDigest' --output text 2>/dev/null); \
+	if [ -n "$$DIGESTS" ]; then \
+		for D in $$DIGESTS; do \
+			aws ecr batch-delete-image --repository-name $$REPO --region $(REGION) \
+				--image-ids imageDigest=$$D >/dev/null; \
+		done; \
+		echo "ECR repo emptied."; \
+	else \
+		echo "ECR repo empty or not found."; \
+	fi
+	@echo "=== Emptying forensics bucket (bypass governance) ==="
+	@BUCKET="$(PROJECT)-forensics-$(AWS_ACCOUNT)"; \
+	if ! aws s3api head-bucket --bucket $$BUCKET --region $(REGION) 2>/dev/null; then \
+		echo "Bucket $$BUCKET not found, skipping."; \
+	else \
+		aws s3api list-object-versions --bucket $$BUCKET --region $(REGION) \
+			--query 'Versions[].[Key,VersionId]' --output text 2>/dev/null \
+			| while read KEY VERSION; do \
+				[ -z "$$KEY" ] && continue; \
+				aws s3api delete-object --bucket $$BUCKET --region $(REGION) \
+					--key "$$KEY" --version-id "$$VERSION" \
+					--bypass-governance-retention >/dev/null 2>&1 \
+					|| echo "  skip (locked): $$KEY@$$VERSION"; \
+			done; \
+		aws s3api list-object-versions --bucket $$BUCKET --region $(REGION) \
+			--query 'DeleteMarkers[].[Key,VersionId]' --output text 2>/dev/null \
+			| while read KEY VERSION; do \
+				[ -z "$$KEY" ] && continue; \
+				aws s3api delete-object --bucket $$BUCKET --region $(REGION) \
+					--key "$$KEY" --version-id "$$VERSION" >/dev/null 2>&1 || true; \
+			done; \
+		echo "Forensics bucket drained (GOVERNANCE retention bypassed)."; \
+	fi
 
 ## ─── Platform (Kubernetes components) ────────────────────────────
 

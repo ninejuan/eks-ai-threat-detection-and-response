@@ -264,6 +264,7 @@ resource "aws_security_group_rule" "mcp_nlb_egress" {
 resource "aws_ecr_repository" "mcp_server" {
   name                 = "${var.project_name}/eks-mcp-server"
   image_tag_mutability = "MUTABLE"
+  force_delete         = true
 
   image_scanning_configuration {
     scan_on_push = true
