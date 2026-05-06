@@ -27,7 +27,12 @@ For each action, report:
 - timestamp: when the action was executed
 
 If an action fails, continue with remaining actions unless it's a critical dependency.
-Never skip checkpoint_pod before isolation."""
+Never skip checkpoint_pod before isolation.
+
+ATDR enforces this ordering server-side: any destructive tool (delete_pod, apply_cilium_network_policy,
+cordon_node, drain_node, patch_deployment with replicas=0) returns status=blocked until checkpoint_pod
+has returned status=success in this run. If you receive a blocked response, re-issue the forensic
+tools first, then retry the destructive action. Do not ignore blocked responses."""
 
 REMEDIATION_TOOLS = [
     {
@@ -134,6 +139,51 @@ REMEDIATION_TOOLS = [
     },
 ]
 
+# Tools that alter or remove a compromised workload. They MUST NOT execute
+# before forensic capture has succeeded in the current execution_log. The
+# SYSTEM_PROMPT alone is not enough because the LLM reorders tool calls.
+DESTRUCTIVE_TOOLS = frozenset(
+    {
+        "delete_pod",
+        "apply_cilium_network_policy",
+        "cordon_node",
+        "drain_node",
+    }
+)
+
+REQUIRED_FORENSIC_TOOLS = ("checkpoint_pod",)
+
+
+def _is_destructive_scaledown(tool_name: str, tool_input: dict) -> bool:
+    if tool_name != "patch_deployment":
+        return False
+    try:
+        return int(tool_input.get("replicas", -1)) == 0
+    except (TypeError, ValueError):
+        return False
+
+
+def _is_destructive(tool_name: str, tool_input: dict) -> bool:
+    if tool_name in DESTRUCTIVE_TOOLS:
+        return True
+    return _is_destructive_scaledown(tool_name, tool_input)
+
+
+def _forensic_precondition_met(execution_log: list, required: tuple = REQUIRED_FORENSIC_TOOLS) -> list:
+    """Return the list of required forensic tools that have NOT yet succeeded.
+
+    Empty list means the precondition is satisfied and destructive actions may proceed.
+    """
+    succeeded = {
+        entry["tool"]
+        for entry in execution_log
+        if isinstance(entry, dict)
+        and entry.get("tool") in required
+        and isinstance(entry.get("result"), dict)
+        and entry["result"].get("status") == "success"
+    }
+    return [tool for tool in required if tool not in succeeded]
+
 
 def lambda_handler(event: dict, context) -> dict:
     config = Config()
@@ -186,7 +236,7 @@ def lambda_handler(event: dict, context) -> dict:
                 tool_input = block["input"]
                 tool_id = block["id"]
 
-                result = _execute_tool(tool_name, tool_input)
+                result = _execute_tool(tool_name, tool_input, execution_log)
                 execution_log.append({"tool": tool_name, "input": tool_input, "result": result})
 
                 tool_results.append(
@@ -295,7 +345,24 @@ def _notify_remediation_complete(config: Config, incident_id: str, execution_log
         logger.warning("Failed to send remediation notification: %s", error)
 
 
-def _execute_tool(tool_name: str, tool_input: dict) -> dict:
+def _execute_tool(tool_name: str, tool_input: dict, execution_log: list) -> dict:
     from app.agents.remediation.tools import execute_tool
+
+    if _is_destructive(tool_name, tool_input):
+        missing = _forensic_precondition_met(execution_log)
+        if missing:
+            logger.warning(
+                "Blocked destructive tool %s: forensic precondition not met (missing=%s)",
+                tool_name,
+                missing,
+            )
+            return {
+                "status": "blocked",
+                "action": tool_name,
+                "error": (
+                    f"forensic_precondition_not_met: required tool(s) {missing} must succeed before destructive actions"
+                ),
+                "required_forensic_tools": list(REQUIRED_FORENSIC_TOOLS),
+            }
 
     return execute_tool(tool_name, tool_input)
