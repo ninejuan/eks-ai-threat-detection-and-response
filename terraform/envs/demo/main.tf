@@ -12,7 +12,7 @@ locals {
 
   # Inference profile IDs for cross-region invocation
   bedrock_fast_model_id  = "global.anthropic.claude-haiku-4-5-20251001-v1:0"
-  bedrock_smart_model_id = "apac.anthropic.claude-sonnet-4-20250514-v1:0"
+  bedrock_smart_model_id = "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
 
   common_tags = {
     Environment = var.environment

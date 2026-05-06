@@ -244,7 +244,7 @@ import boto3
 from strands import Agent
 from strands.models import BedrockModel
 
-MODEL_ID = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+MODEL_ID = "global.anthropic.claude-haiku-4-5-20251001-v1:0"
 
 bedrock_model = BedrockModel(
     model_id=MODEL_ID,
@@ -529,7 +529,7 @@ SOLUTION_SYSTEM_PROMPT = """
 
 solution_agent = Agent(
     model=BedrockModel(
-        model_id="us.anthropic.claude-sonnet-4-6-20251001-v1:0",
+        model_id="global.anthropic.claude-sonnet-4-5-20250929-v1:0",
         temperature=0.1,
         max_tokens=2048,
     ),
@@ -599,7 +599,7 @@ eks_mcp = MCPClient(
 
 remediation_agent = Agent(
     model=BedrockModel(
-        model_id="us.anthropic.claude-sonnet-4-6-20251001-v1:0",
+        model_id="global.anthropic.claude-sonnet-4-5-20250929-v1:0",
         temperature=0.0,
         max_tokens=2048,
     ),
@@ -906,7 +906,7 @@ def safe_agent_handler(handler_fn):
 
 ```python
 HAIKU_CONFIG = {
-    "model_id": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+    "model_id": "global.anthropic.claude-haiku-4-5-20251001-v1:0",
     "temperature": 0.0,      # 결정론적 출력 (분류/요약 작업)
     "max_tokens": 1024,      # 요약 출력에 충분한 크기
     "top_p": 1.0,
@@ -923,7 +923,7 @@ Haiku 4.5 사용 기준:
 
 ```python
 SONNET_CONFIG = {
-    "model_id": "us.anthropic.claude-sonnet-4-6-20251001-v1:0",
+    "model_id": "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
     "temperature": 0.1,      # 약간의 다양성 허용 (추론 작업)
     "max_tokens": 2048,      # 긴 분석 결과 수용
     "top_p": 0.9,

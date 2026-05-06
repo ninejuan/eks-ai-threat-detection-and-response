@@ -8,13 +8,12 @@ logger = logging.getLogger(__name__)
 FAST_MODEL_CHAIN = [
     "global.anthropic.claude-haiku-4-5-20251001-v1:0",
     "apac.anthropic.claude-3-5-sonnet-20241022-v2:0",
-    "anthropic.claude-3-5-sonnet-20240620-v1:0",
 ]
 
 SMART_MODEL_CHAIN = [
+    "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    "global.anthropic.claude-haiku-4-5-20251001-v1:0",
     "apac.anthropic.claude-sonnet-4-20250514-v1:0",
-    "global.anthropic.claude-sonnet-4-6",
-    "apac.anthropic.claude-3-5-sonnet-20241022-v2:0",
 ]
 
 
