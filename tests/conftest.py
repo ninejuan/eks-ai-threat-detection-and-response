@@ -18,6 +18,10 @@ def mock_env(monkeypatch):
     monkeypatch.setenv("KNOWLEDGE_BASE_ID", "kb-test")
     monkeypatch.setenv("STATE_MACHINE_ARN", "arn:aws:states:us-west-2:123456789012:stateMachine:test")
     monkeypatch.setenv("DYNAMODB_TABLE_NAME", "test-incidents")
+    monkeypatch.setenv("MCP_SERVER_URL", "http://mcp.internal/mcp")
+    monkeypatch.setenv("MCP_AUTH_SECRET_ID", "test/mcp/auth-token")
+    monkeypatch.setenv("MCP_SERVER_URL_SECRET_ID", "test/mcp/server-url")
+    monkeypatch.setenv("MCP_TIMEOUT_SECONDS", "3")
 
 
 @pytest.fixture(autouse=True)

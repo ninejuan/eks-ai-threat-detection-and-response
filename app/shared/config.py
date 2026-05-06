@@ -14,3 +14,9 @@ class Config:
     state_machine_arn: str = field(default_factory=lambda: os.environ.get("STATE_MACHINE_ARN", ""))
     dynamodb_table_name: str = field(default_factory=lambda: os.environ.get("DYNAMODB_TABLE_NAME", ""))
     eks_cluster_name: str = field(default_factory=lambda: os.environ.get("EKS_CLUSTER_NAME", "atdr-demo"))
+    mcp_server_url: str = field(default_factory=lambda: os.environ.get("MCP_SERVER_URL", ""))
+    mcp_server_url_secret_id: str = field(
+        default_factory=lambda: os.environ.get("MCP_SERVER_URL_SECRET_ID", "atdr/mcp/server-url")
+    )
+    mcp_auth_secret_id: str = field(default_factory=lambda: os.environ.get("MCP_AUTH_SECRET_ID", "atdr/mcp/auth-token"))
+    mcp_timeout_seconds: int = field(default_factory=lambda: int(os.environ.get("MCP_TIMEOUT_SECONDS", "10")))

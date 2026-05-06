@@ -42,3 +42,7 @@ def test_config_reads_optional_env_values():
     assert config.opensearch_endpoint == "https://opensearch.test"
     assert config.knowledge_base_id == "kb-test"
     assert config.dynamodb_table_name == "test-incidents"
+    assert config.mcp_server_url == "http://mcp.internal/mcp"
+    assert config.mcp_auth_secret_id == "test/mcp/auth-token"
+    assert config.mcp_server_url_secret_id == "test/mcp/server-url"
+    assert config.mcp_timeout_seconds == 3
