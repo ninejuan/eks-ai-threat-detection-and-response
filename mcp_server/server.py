@@ -1,12 +1,12 @@
 import json
 import logging
 import os
+import re
 import secrets
 from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import PurePosixPath
 from typing import Any
-from urllib.parse import urlparse
 
 import boto3
 from kubernetes.client.rest import ApiException
@@ -36,17 +36,18 @@ def _failure(action: str, error: str) -> dict:
     return {"status": "failed", "action": action, "error": error}
 
 
-def _forensics_destination(prefix: str, resource_name: str, requested_destination: str = "") -> tuple[str, str]:
-    if requested_destination:
-        parsed = urlparse(requested_destination)
-        if parsed.scheme != "s3" or not parsed.netloc:
-            raise ValueError("s3_destination must be an s3://bucket/key-prefix URI")
-        bucket = parsed.netloc
-        key_prefix = parsed.path.strip("/")
-    else:
-        bucket = FORENSICS_BUCKET
-        key_prefix = f"{prefix}/{resource_name}/{datetime.now(tz=UTC).strftime('%Y%m%d-%H%M%S')}"
-    return bucket, str(PurePosixPath(key_prefix) / "evidence.json")
+def _forensics_destination(prefix: str, resource_name: str) -> tuple[str, str]:
+    key_prefix = f"{prefix}/{resource_name}/{datetime.now(tz=UTC).strftime('%Y%m%d-%H%M%S')}"
+    return FORENSICS_BUCKET, str(PurePosixPath(key_prefix) / "evidence.json")
+
+
+_LABEL_VALUE_INVALID = re.compile(r"[^A-Za-z0-9._-]")
+
+
+def _sanitize_label_value(value: object) -> str:
+    text = str(value) if value is not None else ""
+    cleaned = _LABEL_VALUE_INVALID.sub("-", text).strip("-._")[:63].strip("-._")
+    return cleaned or "unknown"
 
 
 def _put_forensics_json(bucket: str, key: str, payload: dict) -> str:
@@ -64,8 +65,9 @@ def _sanitize_k8s_object(value: object) -> object:
 
 
 def label_pod(pod_name: str, namespace: str, labels: dict) -> dict:
-    CORE.patch_namespaced_pod(name=pod_name, namespace=namespace, body={"metadata": {"labels": labels}})
-    return _success("label_pod", pod=pod_name, namespace=namespace, labels=labels)
+    sanitized = {key: _sanitize_label_value(value) for key, value in labels.items()}
+    CORE.patch_namespaced_pod(name=pod_name, namespace=namespace, body={"metadata": {"labels": sanitized}})
+    return _success("label_pod", pod=pod_name, namespace=namespace, labels=sanitized)
 
 
 def delete_pod(pod_name: str, namespace: str, force: bool = True, grace_period_seconds: int = 0) -> dict:
@@ -166,7 +168,7 @@ def drain_node(node_name: str, ignore_daemonsets: bool = True) -> dict:
     return _success("drain_node", node=node_name, evicted_pods=len(evicted))
 
 
-def checkpoint_pod(pod_name: str, namespace: str, container_name: str | None = None, s3_destination: str = "") -> dict:
+def checkpoint_pod(pod_name: str, namespace: str, container_name: str | None = None) -> dict:
     pod = CORE.read_namespaced_pod(name=pod_name, namespace=namespace)
     selected_container = container_name or pod.spec.containers[0].name
     logs = {}
@@ -182,7 +184,7 @@ def checkpoint_pod(pod_name: str, namespace: str, container_name: str | None = N
         except ApiException as error:
             logs[container.name] = f"log capture failed: {error.reason}"
 
-    bucket, key = _forensics_destination("checkpoints", pod_name, s3_destination)
+    bucket, key = _forensics_destination("checkpoints", pod_name)
     evidence_uri = _put_forensics_json(
         bucket,
         key,
@@ -205,7 +207,7 @@ def checkpoint_pod(pod_name: str, namespace: str, container_name: str | None = N
     )
 
 
-def capture_hubble_flows(pod_name: str, namespace: str, s3_destination: str = "") -> dict:
+def capture_hubble_flows(pod_name: str, namespace: str) -> dict:
     pod = CORE.read_namespaced_pod(name=pod_name, namespace=namespace)
     pod_ip = pod.status.pod_ip or "unknown"
     host_ip = pod.status.host_ip or "unknown"
@@ -223,7 +225,7 @@ def capture_hubble_flows(pod_name: str, namespace: str, s3_destination: str = ""
     except ApiException:
         endpoints = {"items": [], "note": "CiliumEndpoints not available (ENI mode)"}
 
-    bucket, key = _forensics_destination("network-evidence", pod_name, s3_destination)
+    bucket, key = _forensics_destination("network-evidence", pod_name)
     evidence_uri = _put_forensics_json(
         bucket,
         key,
@@ -356,6 +358,9 @@ class McpHandler(BaseHTTPRequestHandler):
             result = _failure(tool_name, error.reason or str(error))
         except TypeError as error:
             return self._error_response(request_id, -32602, str(error))
+        except Exception as error:
+            logger.exception("MCP tool %s raised an unexpected exception", tool_name)
+            result = _failure(tool_name, f"{type(error).__name__}: {error}")
 
         logger.info("MCP tool executed: %s status=%s", tool_name, result.get("status"))
         return {"jsonrpc": "2.0", "id": request_id, "result": {"structuredContent": result}}

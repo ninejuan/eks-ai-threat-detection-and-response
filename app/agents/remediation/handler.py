@@ -86,27 +86,25 @@ REMEDIATION_TOOLS = [
     },
     {
         "name": "checkpoint_pod",
-        "description": "Capture pod forensics evidence and export it to S3 before isolation",
+        "description": "Capture pod forensics evidence and export it to the ATDR forensics S3 bucket before isolation",
         "input_schema": {
             "type": "object",
             "properties": {
                 "pod_name": {"type": "string"},
                 "namespace": {"type": "string"},
                 "container_name": {"type": "string"},
-                "s3_destination": {"type": "string"},
             },
             "required": ["pod_name", "namespace"],
         },
     },
     {
         "name": "capture_hubble_flows",
-        "description": "Capture Cilium/Hubble flow evidence for a pod and export it to S3",
+        "description": "Capture Cilium/Hubble flow evidence for a pod and export it to the ATDR forensics S3 bucket",
         "input_schema": {
             "type": "object",
             "properties": {
                 "pod_name": {"type": "string"},
                 "namespace": {"type": "string"},
-                "s3_destination": {"type": "string"},
             },
             "required": ["pod_name", "namespace"],
         },

@@ -26,11 +26,49 @@ def server_module(monkeypatch):
     sys.modules.pop("mcp_server.server", None)
 
 
-def test_forensics_destination_validates_custom_s3_uri(server_module):
-    bucket, key = server_module._forensics_destination("checkpoints", "pod-a", "s3://custom-bucket/prefix")
+def test_forensics_destination_uses_server_owned_bucket(server_module):
+    bucket, key = server_module._forensics_destination("checkpoints", "pod-a")
 
-    assert bucket == "custom-bucket"
-    assert key == "prefix/evidence.json"
+    assert bucket == "atdr-forensics-test"
+    assert key.startswith("checkpoints/pod-a/")
+    assert key.endswith("/evidence.json")
+
+
+def test_sanitize_label_value_replaces_invalid_chars(server_module):
+    assert server_module._sanitize_label_value("2026-05-06T18:37:25Z") == "2026-05-06T18-37-25Z"
+    assert server_module._sanitize_label_value("inc-20260506-183725-falco") == "inc-20260506-183725-falco"
+    assert server_module._sanitize_label_value("") == "unknown"
+    assert server_module._sanitize_label_value(None) == "unknown"
+    assert server_module._sanitize_label_value("-.only-punct.-") == "only-punct"
+    assert len(server_module._sanitize_label_value("x" * 200)) == 63
+
+
+def test_label_pod_sanitizes_values_before_patch(server_module, monkeypatch):
+    captured = {}
+
+    class CoreApi:
+        def patch_namespaced_pod(self, name, namespace, body):
+            captured["name"] = name
+            captured["namespace"] = namespace
+            captured["body"] = body
+
+    monkeypatch.setattr(server_module, "CORE", CoreApi())
+
+    result = server_module.label_pod(
+        "pod-a",
+        "default",
+        {
+            "security.incident/id": "inc-20260506-183725-falco",
+            "security.incident/compromised": "true",
+            "security.incident/timestamp": "2026-05-06T18:37:25Z",
+        },
+    )
+
+    assert result["status"] == "success"
+    labels = captured["body"]["metadata"]["labels"]
+    assert labels["security.incident/timestamp"] == "2026-05-06T18-37-25Z"
+    assert labels["security.incident/id"] == "inc-20260506-183725-falco"
+    assert ":" not in labels["security.incident/timestamp"]
 
 
 def test_checkpoint_pod_writes_forensics_evidence(server_module, monkeypatch):
@@ -72,7 +110,17 @@ def test_checkpoint_pod_writes_forensics_evidence(server_module, monkeypatch):
 
 
 def test_capture_hubble_flows_writes_forensics_evidence(server_module, monkeypatch):
+    pod = SimpleNamespace(
+        spec=SimpleNamespace(node_name="node-a"),
+        status=SimpleNamespace(pod_ip="10.0.0.5", host_ip="10.0.0.1"),
+        metadata=SimpleNamespace(labels={"run": "attacker"}),
+    )
     captured = {}
+
+    class CoreApi:
+        def read_namespaced_pod(self, name, namespace):
+            assert (name, namespace) == ("pod-a", "default")
+            return pod
 
     class CustomApi:
         def list_namespaced_custom_object(self, **kwargs):
@@ -84,6 +132,7 @@ def test_capture_hubble_flows_writes_forensics_evidence(server_module, monkeypat
         def put_object(self, **kwargs):
             captured.update(kwargs)
 
+    monkeypatch.setattr(server_module, "CORE", CoreApi())
     monkeypatch.setattr(server_module, "CUSTOM", CustomApi())
     monkeypatch.setattr(server_module, "S3", S3Client())
 
@@ -98,4 +147,5 @@ def test_capture_hubble_flows_writes_forensics_evidence(server_module, monkeypat
     payload = json.loads(captured["Body"].decode("utf-8"))
     assert payload["kind"] == "network_flow_snapshot"
     assert payload["pod_name"] == "pod-a"
+    assert payload["pod_ip"] == "10.0.0.5"
     assert payload["cilium_endpoints"]["items"][0]["metadata"]["name"] == "endpoint-a"
