@@ -195,6 +195,37 @@ resource "aws_dynamodb_table" "event_dedup" {
   }
 }
 
+resource "aws_dynamodb_table" "tetragon_events" {
+  name         = "${var.project_name}-tetragon-events"
+  billing_mode = "PAY_PER_REQUEST"
+  hash_key     = "pod_uid"
+  range_key    = "sk"
+
+  attribute {
+    name = "pod_uid"
+    type = "S"
+  }
+
+  attribute {
+    name = "sk"
+    type = "S"
+  }
+
+  ttl {
+    attribute_name = "ttl"
+    enabled        = true
+  }
+
+  server_side_encryption {
+    enabled     = true
+    kms_key_arn = module.kms.key_arn
+  }
+
+  tags = {
+    Name = "${var.project_name}-tetragon-events"
+  }
+}
+
 resource "aws_secretsmanager_secret" "slack_bot_token" {
   name                    = "${var.project_name}/slack/bot-token"
   recovery_window_in_days = 0

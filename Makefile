@@ -180,7 +180,8 @@ platform-up:
 		FORENSICS_BUCKET=$$(cd $(TF_DIR) && terraform output -raw forensics_bucket_id) && \
 		MCP_NLB_SG=$$(cd $(TF_DIR) && terraform output -raw mcp_nlb_security_group_id) && \
 		VPC_CIDR=$$(cd $(TF_DIR) && terraform output -raw vpc_cidr) && \
-		python3 -c 'from pathlib import Path; import sys; text=Path("kubernetes/mcp/eks-mcp-server.yaml").read_text(); print(text.replace("$${MCP_IMAGE}", sys.argv[1]).replace("$${FORENSICS_BUCKET}", sys.argv[2]).replace("$${MCP_NLB_SECURITY_GROUP_ID}", sys.argv[3]).replace("$${VPC_CIDR}", sys.argv[4]))' "$$MCP_IMAGE" "$$FORENSICS_BUCKET" "$$MCP_NLB_SG" "$$VPC_CIDR" | $(KCTL) apply -f -
+		TETRAGON_EVENTS_TABLE="$(PROJECT)-tetragon-events" && \
+		python3 -c 'from pathlib import Path; import sys; text=Path("kubernetes/mcp/eks-mcp-server.yaml").read_text(); repls={"$${MCP_IMAGE}": sys.argv[1], "$${FORENSICS_BUCKET}": sys.argv[2], "$${MCP_NLB_SECURITY_GROUP_ID}": sys.argv[3], "$${VPC_CIDR}": sys.argv[4], "$${TETRAGON_EVENTS_TABLE}": sys.argv[5], "$${AWS_REGION}": sys.argv[6]};\nfor k,v in repls.items(): text=text.replace(k,v)\nprint(text)' "$$MCP_IMAGE" "$$FORENSICS_BUCKET" "$$MCP_NLB_SG" "$$VPC_CIDR" "$$TETRAGON_EVENTS_TABLE" "$(REGION)" | $(KCTL) apply -f -
 	@$(KCTL) rollout status deployment/eks-mcp-server -n atdr --timeout=180s
 	@echo "Waiting for EKS MCP internal load balancer..."
 	@for i in 1 2 3 4 5 6 7 8 9 10 11 12; do \
@@ -200,7 +201,7 @@ platform-up:
 platform-down:
 	@echo "=== Removing platform components ==="
 	@echo "--- Removing CRD resources (while controllers still running) ---"
-	@python3 -c 'from pathlib import Path; text=Path("kubernetes/mcp/eks-mcp-server.yaml").read_text(); print(text.replace("$${MCP_IMAGE}", "unused").replace("$${FORENSICS_BUCKET}", "unused").replace("$${MCP_NLB_SECURITY_GROUP_ID}", "unused").replace("$${VPC_CIDR}", "10.0.0.0/16"))' | $(KCTL) delete -f - --ignore-not-found --timeout=30s 2>/dev/null || true
+	@python3 -c 'from pathlib import Path; import sys; text=Path("kubernetes/mcp/eks-mcp-server.yaml").read_text(); repls={"$${MCP_IMAGE}":"unused","$${FORENSICS_BUCKET}":"unused","$${MCP_NLB_SECURITY_GROUP_ID}":"unused","$${VPC_CIDR}":"10.0.0.0/16","$${TETRAGON_EVENTS_TABLE}":"unused","$${AWS_REGION}":"unused"};\nfor k,v in repls.items(): text=text.replace(k,v)\nprint(text)' | $(KCTL) delete -f - --ignore-not-found --timeout=30s 2>/dev/null || true
 	@python3 -c 'from pathlib import Path; import sys; print(Path("kubernetes/external-secrets/external-secrets.yaml").read_text().replace("$${AWS_REGION}", sys.argv[1]))' "$(REGION)" | $(KCTL) delete -f - --ignore-not-found --timeout=30s 2>/dev/null || true
 	@$(KCTL) delete -f kubernetes/tetragon/tracing-policies.yaml --ignore-not-found --timeout=30s 2>/dev/null || true
 	@$(KCTL) delete -f kubernetes/admission-policies/policies.yaml --ignore-not-found --timeout=30s 2>/dev/null || true

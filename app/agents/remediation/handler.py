@@ -115,6 +115,22 @@ REMEDIATION_TOOLS = [
         },
     },
     {
+        "name": "collect_tetragon_timeline",
+        "description": (
+            "Retrieve the recent Tetragon process/file/network events recorded for the given pod UID. "
+            "Use the pod UID from checkpoint_pod output or the raw event to correlate the attacker's activity."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "pod_uid": {"type": "string"},
+                "since_minutes": {"type": "integer"},
+                "max_events": {"type": "integer"},
+            },
+            "required": ["pod_uid"],
+        },
+    },
+    {
         "name": "cordon_node",
         "description": "Mark a node as unschedulable",
         "input_schema": {

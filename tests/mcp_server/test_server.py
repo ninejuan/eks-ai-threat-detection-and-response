@@ -11,6 +11,7 @@ import pytest
 def server_module(monkeypatch):
     monkeypatch.setenv("MCP_AUTH_TOKEN", "test-token")
     monkeypatch.setenv("FORENSICS_BUCKET", "atdr-forensics-test")
+    monkeypatch.setenv("TETRAGON_EVENTS_TABLE", "atdr-tetragon-events-test")
     sys.modules.pop("mcp_server.server", None)
 
     with (
@@ -19,6 +20,7 @@ def server_module(monkeypatch):
         patch("kubernetes.client.AppsV1Api"),
         patch("kubernetes.client.CustomObjectsApi"),
         patch("boto3.client"),
+        patch("boto3.resource"),
     ):
         module = importlib.import_module("mcp_server.server")
 
@@ -261,3 +263,102 @@ def test_put_forensics_object_returns_sha256(server_module, monkeypatch):
     assert size == len(payload)
     assert sha256 == "9836e30efa1910f25dffa2908852fd823db8a2d557c2320f76ea66d3909b14ce"
     assert put_calls[0]["Metadata"] == {"sha256": sha256}
+
+
+def test_collect_tetragon_timeline_returns_events(server_module, monkeypatch):
+    captured_queries = []
+
+    def fake_query(**kwargs):
+        captured_queries.append(kwargs)
+        return {
+            "Items": [
+                {
+                    "sk": "2026-05-06T19:16:03Z#execA",
+                    "recorded_at": "2026-05-06T19:16:05Z",
+                    "namespace": "atdr-test",
+                    "pod_name": "attacker",
+                    "container": "attacker",
+                    "policy_name": "detect-sensitive-file-access",
+                    "function_name": "security_file_open",
+                    "binary": "/bin/cat",
+                    "arguments": "/etc/shadow",
+                },
+                {
+                    "sk": "2026-05-06T19:16:10Z#execB",
+                    "recorded_at": "2026-05-06T19:16:12Z",
+                    "namespace": "atdr-test",
+                    "pod_name": "attacker",
+                    "container": "attacker",
+                    "policy_name": "detect-privilege-escalation",
+                    "function_name": "__x64_sys_setuid",
+                    "binary": "/bin/su",
+                    "arguments": "",
+                },
+            ],
+        }
+
+    fake_table = SimpleNamespace(query=fake_query)
+    monkeypatch.setattr(server_module.DYNAMODB, "Table", lambda name: fake_table)
+
+    result = server_module.collect_tetragon_timeline(pod_uid="uid-1", since_minutes=15)
+
+    assert result["status"] == "success"
+    assert result["pod_uid"] == "uid-1"
+    assert result["event_count"] == 2
+    assert result["namespace"] == "atdr-test"
+    assert result["pod_name"] == "attacker"
+    assert result["evidence_uri"] is None
+
+    assert len(captured_queries) == 1
+    assert "KeyConditionExpression" in captured_queries[0]
+    assert captured_queries[0]["ScanIndexForward"] is True
+
+
+def test_collect_tetragon_timeline_writes_forensics_when_incident_id(server_module, monkeypatch):
+    def fake_query(**_kwargs):
+        return {
+            "Items": [
+                {
+                    "sk": "2026-05-06T19:16:03Z#execA",
+                    "recorded_at": "2026-05-06T19:16:05Z",
+                    "namespace": "atdr-test",
+                    "pod_name": "attacker",
+                    "container": "attacker",
+                    "policy_name": "detect-sensitive-file-access",
+                    "function_name": "security_file_open",
+                    "binary": "/bin/cat",
+                    "arguments": "/etc/shadow",
+                },
+            ],
+        }
+
+    fake_table = SimpleNamespace(query=fake_query)
+    monkeypatch.setattr(server_module.DYNAMODB, "Table", lambda name: fake_table)
+
+    put_calls = []
+
+    class S3Client:
+        def put_object(self, **kwargs):
+            put_calls.append(kwargs)
+
+    monkeypatch.setattr(server_module, "S3", S3Client())
+
+    result = server_module.collect_tetragon_timeline(pod_uid="uid-2", since_minutes=10, incident_id="inc-2026-tl")
+
+    assert result["status"] == "success"
+    assert result["evidence_uri"].startswith("s3://atdr-forensics-test/incidents/inc-2026-tl/tetragon-timeline/uid-2/")
+    assert "evidence_sha256" in result
+
+    evidence_call = next(call for call in put_calls if "/evidence.json" in call["Key"])
+    payload = json.loads(evidence_call["Body"].decode("utf-8"))
+    assert payload["kind"] == "tetragon_timeline"
+    assert payload["incident_id"] == "inc-2026-tl"
+    assert payload["event_count"] == 1
+    assert payload["events"][0]["binary"] == "/bin/cat"
+
+
+def test_collect_tetragon_timeline_reports_missing_env(server_module, monkeypatch):
+    monkeypatch.setattr(server_module, "TETRAGON_EVENTS_TABLE", "")
+    result = server_module.collect_tetragon_timeline(pod_uid="uid-x")
+    assert result["status"] == "failed"
+    assert "TETRAGON_EVENTS_TABLE" in result["error"]

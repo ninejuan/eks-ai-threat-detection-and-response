@@ -92,6 +92,17 @@ resource "aws_iam_role_policy" "mcp_server_forensics" {
         ]
         Resource = "arn:aws:kms:${var.region}:${local.account_id}:key/*"
       },
+      {
+        Sid    = "QueryTetragonTimeline"
+        Effect = "Allow"
+        Action = [
+          "dynamodb:Query",
+        ]
+        Resource = [
+          "arn:aws:dynamodb:${var.region}:${local.account_id}:table/${var.project}-tetragon-events",
+          "arn:aws:dynamodb:${var.region}:${local.account_id}:table/${var.project}-tetragon-events/index/*",
+        ]
+      },
     ]
   })
 }

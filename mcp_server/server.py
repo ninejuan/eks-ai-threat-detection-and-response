@@ -4,12 +4,13 @@ import logging
 import os
 import re
 import secrets
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import PurePosixPath
 from typing import Any
 
 import boto3
+from boto3.dynamodb.conditions import Key
 from kubernetes.client.rest import ApiException
 
 from kubernetes import client as k8s_client
@@ -350,6 +351,95 @@ def _capture_hubble_flows(pod_namespace: str, pod_name: str, since_minutes: int,
     )
 
 
+DYNAMODB = boto3.resource("dynamodb", region_name=os.environ.get("AWS_REGION"))
+TETRAGON_EVENTS_TABLE = os.environ.get("TETRAGON_EVENTS_TABLE", "")
+
+
+def collect_tetragon_timeline(
+    pod_uid: str,
+    since_minutes: int = 30,
+    max_events: int = 500,
+    incident_id: str | None = None,
+) -> dict:
+    if not TETRAGON_EVENTS_TABLE:
+        return _failure("collect_tetragon_timeline", "TETRAGON_EVENTS_TABLE env not configured")
+
+    table = DYNAMODB.Table(TETRAGON_EVENTS_TABLE)
+    since = datetime.now(tz=UTC) - timedelta(minutes=int(since_minutes))
+    since_iso = since.isoformat()
+
+    events: list[dict] = []
+    namespace = ""
+    pod_name = ""
+    last_key = None
+    remaining = max(1, int(max_events))
+
+    while True:
+        kwargs = {
+            "KeyConditionExpression": Key("pod_uid").eq(pod_uid) & Key("sk").gte(f"{since_iso}#"),
+            "Limit": min(remaining, 100),
+            "ScanIndexForward": True,
+        }
+        if last_key:
+            kwargs["ExclusiveStartKey"] = last_key
+
+        page = table.query(**kwargs)
+        for item in page.get("Items", []):
+            namespace = namespace or item.get("namespace", "")
+            pod_name = pod_name or item.get("pod_name", "")
+            events.append(
+                {
+                    "recorded_at": item.get("recorded_at"),
+                    "sort_key": item.get("sk"),
+                    "namespace": item.get("namespace", ""),
+                    "pod_name": item.get("pod_name", ""),
+                    "container": item.get("container", ""),
+                    "policy_name": item.get("policy_name", ""),
+                    "function_name": item.get("function_name", ""),
+                    "binary": item.get("binary", ""),
+                    "arguments": item.get("arguments", ""),
+                }
+            )
+        remaining = max(0, max_events - len(events))
+        last_key = page.get("LastEvaluatedKey")
+        if not last_key or remaining == 0:
+            break
+
+    payload = {
+        "captured_at": datetime.now(tz=UTC).isoformat(),
+        "kind": "tetragon_timeline",
+        "incident_id": _sanitize_incident_id(incident_id),
+        "pod_uid": pod_uid,
+        "namespace": namespace,
+        "pod_name": pod_name,
+        "since": since_iso,
+        "event_count": len(events),
+        "events": events,
+    }
+
+    evidence: dict | None = None
+    if incident_id:
+        bucket, key = _forensics_destination("tetragon-timeline", pod_uid, incident_id)
+        evidence = _put_forensics_json(
+            bucket,
+            key,
+            payload,
+            incident_id=incident_id,
+            kind="tetragon_timeline",
+        )
+
+    return _success(
+        "collect_tetragon_timeline",
+        pod_uid=pod_uid,
+        namespace=namespace,
+        pod_name=pod_name,
+        since=since_iso,
+        event_count=len(events),
+        evidence_uri=(evidence or {}).get("uri"),
+        evidence_sha256=(evidence or {}).get("sha256"),
+    )
+
+
 TOOLS = {
     "label_pod": label_pod,
     "delete_pod": delete_pod,
@@ -359,6 +449,7 @@ TOOLS = {
     "drain_node": drain_node,
     "checkpoint_pod": checkpoint_pod,
     "capture_hubble_flows": capture_hubble_flows,
+    "collect_tetragon_timeline": collect_tetragon_timeline,
 }
 
 

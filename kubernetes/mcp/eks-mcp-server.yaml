@@ -90,6 +90,10 @@ spec:
               value: "8080"
             - name: FORENSICS_BUCKET
               value: ${FORENSICS_BUCKET}
+            - name: TETRAGON_EVENTS_TABLE
+              value: ${TETRAGON_EVENTS_TABLE}
+            - name: AWS_REGION
+              value: ${AWS_REGION}
           readinessProbe:
             httpGet:
               path: /healthz

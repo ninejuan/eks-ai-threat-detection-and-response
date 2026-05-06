@@ -18,6 +18,7 @@ ALLOWED_TOOLS = {
     "drain_node",
     "checkpoint_pod",
     "capture_hubble_flows",
+    "collect_tetragon_timeline",
 }
 
 _warmed_up = False
@@ -64,7 +65,7 @@ def _warmup(server_url: str) -> None:
         logger.warning("MCP warmup failed (non-fatal): %s", error)
 
 
-INCIDENT_AWARE_TOOLS = frozenset({"checkpoint_pod", "capture_hubble_flows"})
+INCIDENT_AWARE_TOOLS = frozenset({"checkpoint_pod", "capture_hubble_flows", "collect_tetragon_timeline"})
 
 
 def execute_tool(tool_name: str, tool_input: dict, *, incident_id: str | None = None) -> dict:
