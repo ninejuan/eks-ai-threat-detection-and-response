@@ -1,47 +1,9 @@
-# ATDR — AI Threat Detection and Response for EKS
+# ATDR; AI Threat Detection and Response for EKS
 
-EKS 환경에서 보안 위협을 실시간 탐지하고, AI 에이전트 체인으로 분석·대응하는 시스템.
-
-아키텍처 원본 다이어그램은 `refs/eksai1.jpg`, `refs/eksai2.jpg`를 따른다.
+Amazon EKS 환경에서 보안 위협을 실시간으로 탐지하고, AI Agent Chain을 통해 분석 및 대응하는 아키텍처입니다.
 
 ## Architecture
-
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                         EKS Cluster (v1.35)                         │
-│                                                                     │
-│  ┌─────────┐  ┌──────────┐  ┌───────────────┐  ┌───────────────┐  │
-│  │  Falco  │  │ Tetragon │  │ GuardDuty     │  │  Workloads    │  │
-│  │  (eBPF) │  │  (eBPF)  │  │ Runtime Agent │  │  (apps)       │  │
-│  └────┬────┘  └────┬─────┘  └──────┬────────┘  └───────────────┘  │
-│       │             │               │                               │
-└───────┼─────────────┼───────────────┼───────────────────────────────┘
-        │             │               │
-        v             │               v
-   ┌─────────┐        │        ┌─────────────┐
-   │   SNS   │        │        │ EventBridge │
-   └────┬────┘        │        └──────┬──────┘
-        │             │               │
-        v             v               v
-   ┌──────────────────────────────────────┐
-   │              SQS Queue               │
-   └──────────────────┬───────────────────┘
-                      │
-                      v
-   ┌──────────────────────────────────────┐
-   │    Step Functions Express Workflow    │
-   │                                      │
-   │  Summary → Triage → Solution → Rem  │
-   │  (Haiku)   (Haiku)  (Sonnet)  (Son) │
-   └──────────────────┬───────────────────┘
-                      │
-              ┌───────┼───────┐
-              v       v       v
-         ┌───────┐ ┌─────┐ ┌──────────┐
-         │ Slack │ │ DDB │ │ EKS MCP  │
-         │  Bot  │ │     │ │(격리/삭제)│
-         └───────┘ └─────┘ └──────────┘
-```
+![architecture.png](./architecture.png)
 
 3중 탐지(Falco + Tetragon + GuardDuty) → AI 4단계 분석(Summary → Triage → Solution → Remediation) → 자동 대응(Pod 격리, SIGKILL, NetworkPolicy) + Human Approval via Slack.
 
@@ -62,7 +24,7 @@ EKS 환경에서 보안 위협을 실시간 탐지하고, AI 에이전트 체인
 ./init.sh
 ```
 
-S3 backend 버킷을 생성하고 terraform init을 실행한다.
+S3 backend 버킷을 생성하고 terraform init을 실행.
 
 ### 2. Infrastructure Up
 
@@ -70,20 +32,20 @@ S3 backend 버킷을 생성하고 terraform init을 실행한다.
 make infra-up
 ```
 
-Terraform으로 전체 AWS 인프라를 생성한다:
+Terraform으로 전체 AWS 인프라를 생성:
 - VPC (2-AZ, public/private subnets, NAT GW)
 - EKS 클러스터 (v1.35, t3.large + c5.large 노드)
 - IAM 역할 (EKS, Lambda, Step Functions, Pod Identity)
 - GuardDuty + Security Hub + EventBridge
 - SNS/SQS + DLQ
-- Lambda 함수 6개 + Step Functions 워크플로우
+- Lambda func 6개 + Step Functions Workflow
 - API Gateway (Slack Bot)
 - OpenSearch Serverless (Knowledge Base)
 - KMS + S3 (runbooks, forensics, logs)
 - DynamoDB (incidents, approval-audit)
 - Secrets Manager
 
-약 15-20분 소요. 완료 후 kubeconfig가 자동 설정된다.
+약 15-20분 소요. 완료 후 kubeconfig가 자동 설정됨.
 
 ### 3. Secrets 설정
 
@@ -91,7 +53,7 @@ Terraform으로 전체 AWS 인프라를 생성한다:
 make secrets
 ```
 
-인터랙티브 프롬프트로 Slack Bot Token, Signing Secret, MCP Token을 설정한다. MCP Token은 EKS MCP 서버 인증에 필요하므로 생략할 수 없다.
+위 명령어를 통해 Slack Bot Token, Signing Secret, MCP Token을 설정한다.
 
 Slack App은 [api.slack.com](https://api.slack.com/apps)에서 먼저 생성해야 한다:
 - Bot Token Scopes: `chat:write`, `commands`, `incoming-webhook`
@@ -260,7 +222,7 @@ Grafana 접속 주소는 `make status`에서 확인한다.
 
 ## Attack Simulation
 
-5개 시나리오 (MITRE ATT&CK 매핑):
+5개 시나리오 (MITRE ATT&CK Mapping):
 
 | # | 시나리오 | Technique |
 |---|---------|-----------|
@@ -270,7 +232,7 @@ Grafana 접속 주소는 `make status`에서 확인한다.
 | 4 | DNS 터널링 | T1071.004 |
 | 5 | 래터럴 무브먼트 | T1210 |
 
-공격 시뮬레이션 시나리오와 단계별 절차는 `docs/11-runbooks/`에 정리되어 있다.
+공격 시뮬레이션 시나리오와 단계별 절차는 `docs/11-runbooks/`에 정리해두었다.
 
 ## Development
 
@@ -280,8 +242,6 @@ make lint-fix      # 자동 수정
 make test          # pytest
 make build         # Lambda layer + 함수 패키징
 ```
-
-Pre-commit hooks가 설정되어 있어 커밋 시 자동으로 lint/format/validate가 실행된다.
 
 ## Cost
 
@@ -294,12 +254,8 @@ Pre-commit hooks가 설정되어 있어 커밋 시 자동으로 lint/format/vali
 | 기타 (GuardDuty, Lambda, S3, DDB 등) | ~$20 |
 | **합계** | **~$615/월** |
 
-실험 끝나면 `make all-down`으로 전부 내린다. 중간에 `make scale-down`으로 노드만 내리면 EC2 비용을 절약할 수 있다.
-
-## Team
-
-선린인터넷고등학교 3학년 캡스톤 프로젝트 (4인)
+실험 끝나면 `make all-down`으로 전부 내린다. 중간에 `make scale-down`으로 노드만 내리면 EC2 비용을 절약할 수 있다. 그치만 권장하지는 않는다.
 
 ## License
 
-MIT
+Apache 2.0 LICENSE

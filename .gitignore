@@ -47,3 +47,4 @@ build/
 slack/manifest.json
 *.zip
 mcp_server/_generated/
+.ruff_cache/
