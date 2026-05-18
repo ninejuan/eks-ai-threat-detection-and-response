@@ -53,15 +53,29 @@ Terraform으로 전체 AWS 인프라를 생성:
 make secrets
 ```
 
-위 명령어를 통해 Slack Bot Token, Signing Secret, MCP Token을 설정한다.
+위 명령어를 통해 Slack Bot Token, Signing Secret, MCP Token을 인터랙티브로 설정한다.
 
-Slack App은 [api.slack.com](https://api.slack.com/apps)에서 먼저 생성해야 한다:
-- Bot Token Scopes: `chat:write`, `commands`, `incoming-webhook`
-- Event Subscriptions URL: `<slack_api_endpoint>/slack/events`
-- Interactivity URL: `<slack_api_endpoint>/slack/interactions`
-- Slash Commands: `/atdr`
+**Slack App** — `make infra-up` 완료 시 `slack/manifest.json`이 자동 생성된다. 이 파일에 API Gateway URL이 이미 주입되어 있으므로 그대로 사용하면 된다:
 
-`slack_api_endpoint`는 `make infra-up` 출력에서 확인할 수 있다.
+1. [api.slack.com/apps](https://api.slack.com/apps) 접속
+2. **Create New App** → **From an app manifest** 선택
+3. `slack/manifest.json` 내용을 붙여넣기
+4. **Install to Workspace** 클릭
+5. Bot Token과 Signing Secret을 복사해두고 아래 `make secrets`에서 입력
+
+수동으로 manifest를 재생성하려면:
+
+```bash
+make slack-manifest
+```
+
+**MCP Auth Token** — Lambda와 EKS MCP 서버 간 인증에 사용되는 공유 시크릿이다. 임의의 랜덤 문자열을 생성해서 입력하면 된다:
+
+```bash
+openssl rand -hex 32
+```
+
+입력된 토큰은 Secrets Manager(`atdr/mcp/auth-token`)에 저장되며, Lambda는 이 시크릿을 읽어 Bearer 헤더로 MCP 서버에 전달하고, MCP 서버는 External Secrets Operator를 통해 동일한 값을 K8s Secret으로 동기화받아 요청을 검증한다.
 
 ### 4. Platform Up (Kubernetes 컴포넌트)
 

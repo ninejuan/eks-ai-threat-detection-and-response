@@ -1,9 +1,11 @@
-CLUSTER_NAME ?= atdr-demo
-REGION       ?= ap-northeast-2
-PROJECT      ?= atdr
+TF_DIR       := terraform/envs/demo
+REGION       ?= $(shell cd $(TF_DIR) && terraform output -raw region 2>/dev/null || echo "ap-northeast-2")
+CLUSTER_NAME ?= $(shell cd $(TF_DIR) && terraform output -raw eks_cluster_name 2>/dev/null || echo "atdr-demo")
+ENVIRONMENT  ?= $(shell grep -A3 'variable "environment"' $(TF_DIR)/variable.tf | grep default | sed 's/.*"\(.*\)".*/\1/')
+PROJECT      ?= $(shell cd $(TF_DIR) && terraform output -raw project_name 2>/dev/null || echo "$(CLUSTER_NAME)" | sed 's/-$(ENVIRONMENT)$$//')
 AWS_ACCOUNT  ?= $(shell aws sts get-caller-identity --query Account --output text 2>/dev/null)
 MCP_IMAGE_TAG ?= $(shell git rev-parse --short HEAD 2>/dev/null || date +%Y%m%d%H%M%S)
-TF_DIR       := terraform/envs/demo
+MCP_IMAGE_TAG := $(MCP_IMAGE_TAG)
 KCTL         := kubectl --context $(CLUSTER_NAME)
 HLM          := helm --kube-context $(CLUSTER_NAME)
 LAMBDA_MOD   := terraform/modules/lambda
@@ -78,6 +80,7 @@ infra-down-preflight:
 
 platform-up:
 	@echo "=== Installing platform components (context: $(CLUSTER_NAME)) ==="
+	aws eks update-kubeconfig --name $(CLUSTER_NAME) --region $(REGION) --alias $(CLUSTER_NAME)
 	helm repo add eks https://aws.github.io/eks-charts 2>/dev/null || true
 	helm repo add falcosecurity https://falcosecurity.github.io/charts 2>/dev/null || true
 	helm repo add cilium https://helm.cilium.io 2>/dev/null || true
@@ -85,9 +88,31 @@ platform-up:
 	helm repo add grafana https://grafana.github.io/helm-charts 2>/dev/null || true
 	helm repo add external-secrets https://charts.external-secrets.io 2>/dev/null || true
 	helm repo update eks falcosecurity cilium prometheus-community grafana external-secrets
+	@echo "--- StorageClass (gp3) ---"
+	$(KCTL) apply -f kubernetes/storage/gp3-storageclass.yaml
+	@echo "--- Cilium ENI mode ---"
+	@$(KCTL) -n kube-system patch daemonset aws-node --type='strategic' \
+		-p='{"spec":{"template":{"spec":{"nodeSelector":{"io.cilium/aws-node-enabled":"true"}}}}}'
+	@K8S_SERVICE_HOST=$$(aws eks describe-cluster --name $(CLUSTER_NAME) --region $(REGION) --query 'cluster.endpoint' --output text | sed 's|https://||') && \
+		$(HLM) upgrade --install cilium cilium/cilium \
+			-n kube-system \
+			--set eni.enabled=true \
+			--set ipam.mode=eni \
+			--set routingMode=native \
+			--set enableIPv4Masquerade=false \
+			--set hubble.enabled=true \
+			--set hubble.relay.enabled=true \
+			--set hubble.metrics.enabled="{flow,drop,tcp,dns}" \
+			--set operator.replicas=2 \
+			--set kubeProxyReplacement=true \
+			--set k8sServiceHost=$$K8S_SERVICE_HOST \
+			--set k8sServicePort=443
+	@$(KCTL) rollout status daemonset/cilium -n kube-system --timeout=180s
+	@$(KCTL) rollout status deployment/cilium-operator -n kube-system --timeout=120s
+	@$(KCTL) rollout status deployment/hubble-relay -n kube-system --timeout=180s
 	@echo "--- AWS Load Balancer Controller ---"
-	@$(KCTL) delete mutatingwebhookconfigurations aws-load-balancer-webhook --ignore-not-found 2>/dev/null
-	@$(KCTL) delete validatingwebhookconfigurations aws-load-balancer-webhook --ignore-not-found 2>/dev/null
+	@$(KCTL) delete mutatingwebhookconfigurations aws-load-balancer-webhook --ignore-not-found 2>/dev/null || true
+	@$(KCTL) delete validatingwebhookconfigurations aws-load-balancer-webhook --ignore-not-found 2>/dev/null || true
 	$(HLM) upgrade --install aws-load-balancer-controller eks/aws-load-balancer-controller \
 		-n kube-system \
 		--set clusterName=$(CLUSTER_NAME) \
@@ -97,25 +122,6 @@ platform-up:
 		--set vpcId=$$(aws eks describe-cluster --name $(CLUSTER_NAME) --region $(REGION) --query 'cluster.resourcesVpcConfig.vpcId' --output text)
 	@echo "Waiting for LB Controller to be ready..."
 	@$(KCTL) rollout status deployment/aws-load-balancer-controller -n kube-system --timeout=120s
-	@echo "--- StorageClass (gp3) ---"
-	$(KCTL) apply -f kubernetes/storage/gp3-storageclass.yaml
-	@echo "--- Cilium ENI mode ---"
-	@$(KCTL) -n kube-system patch daemonset aws-node --type='strategic' \
-		-p='{"spec":{"template":{"spec":{"nodeSelector":{"io.cilium/aws-node-enabled":"true"}}}}}'
-	$(HLM) upgrade --install cilium cilium/cilium \
-		-n kube-system \
-		--set eni.enabled=true \
-		--set ipam.mode=eni \
-		--set routingMode=native \
-		--set enableIPv4Masquerade=false \
-		--set hubble.enabled=true \
-		--set hubble.relay.enabled=true \
-		--set hubble.metrics.enabled="{flow,drop,tcp,dns}" \
-		--set operator.replicas=1 \
-		--set kubeProxyReplacement=true
-	@$(KCTL) rollout status daemonset/cilium -n kube-system --timeout=180s
-	@$(KCTL) rollout status deployment/cilium-operator -n kube-system --timeout=120s
-	@$(KCTL) rollout status deployment/hubble-relay -n kube-system --timeout=180s
 	@echo "--- Falco ---"
 	$(HLM) upgrade --install falco falcosecurity/falco \
 		-n falco --create-namespace \
@@ -148,9 +154,9 @@ platform-up:
 	@$(KCTL) rollout status deployment/external-secrets-webhook -n external-secrets --timeout=120s
 	$(KCTL) create namespace monitoring --dry-run=client -o yaml | $(KCTL) apply -f -
 	$(KCTL) create namespace atdr --dry-run=client -o yaml | $(KCTL) apply -f -
-	@aws secretsmanager get-secret-value --secret-id atdr/mcp/auth-token --region $(REGION) --query SecretString --output text >/dev/null || \
-		(echo "ERROR: atdr/mcp/auth-token is empty. Run make secrets before make platform-up."; exit 1)
-	@python3 -c 'from pathlib import Path; import sys; print(Path("kubernetes/external-secrets/external-secrets.yaml").read_text().replace("$${AWS_REGION}", sys.argv[1]))' "$(REGION)" | $(KCTL) apply -f -
+	@aws secretsmanager get-secret-value --secret-id $(PROJECT)/mcp/auth-token --region $(REGION) --query SecretString --output text >/dev/null || \
+		(echo "ERROR: $(PROJECT)/mcp/auth-token is empty. Run make secrets before make platform-up."; exit 1)
+	@python3 -c 'from pathlib import Path; import sys; text=Path("kubernetes/external-secrets/external-secrets.yaml").read_text(); print(text.replace("$${AWS_REGION}", sys.argv[1]).replace("$${PROJECT}", sys.argv[2]))' "$(REGION)" "$(PROJECT)" | $(KCTL) apply -f -
 	@echo "Waiting for Slack webhook secret..."
 	@for i in 1 2 3 4 5 6 7 8 9 10 11 12; do \
 		$(KCTL) get secret slack-webhook-url -n monitoring >/dev/null 2>&1 && exit 0; \
@@ -175,21 +181,21 @@ platform-up:
 	$(KCTL) apply -f kubernetes/monitoring/grafana-ingress.yaml
 	$(KCTL) apply -f kubernetes/monitoring/atdr-dashboard.yaml
 	@echo "--- EKS MCP Server ---"
-	@$(MAKE) -s build-mcp
+	@$(MAKE) -s build-mcp MCP_IMAGE_TAG=$(MCP_IMAGE_TAG)
 	@MCP_IMAGE=$$(cd $(TF_DIR) && terraform output -raw mcp_server_repository_url):$(MCP_IMAGE_TAG) && \
 		FORENSICS_BUCKET=$$(cd $(TF_DIR) && terraform output -raw forensics_bucket_id) && \
 		MCP_NLB_SG=$$(cd $(TF_DIR) && terraform output -raw mcp_nlb_security_group_id) && \
 		VPC_CIDR=$$(cd $(TF_DIR) && terraform output -raw vpc_cidr) && \
 		TETRAGON_EVENTS_TABLE="$(PROJECT)-tetragon-events" && \
 		EKS_AUDIT_LOG_GROUP="/aws/eks/$(CLUSTER_NAME)/cluster" && \
-		python3 -c 'from pathlib import Path; import sys; text=Path("kubernetes/mcp/eks-mcp-server.yaml").read_text(); repls={"$${MCP_IMAGE}": sys.argv[1], "$${FORENSICS_BUCKET}": sys.argv[2], "$${MCP_NLB_SECURITY_GROUP_ID}": sys.argv[3], "$${VPC_CIDR}": sys.argv[4], "$${TETRAGON_EVENTS_TABLE}": sys.argv[5], "$${EKS_AUDIT_LOG_GROUP}": sys.argv[6], "$${AWS_REGION}": sys.argv[7]};\nfor k,v in repls.items(): text=text.replace(k,v)\nprint(text)' "$$MCP_IMAGE" "$$FORENSICS_BUCKET" "$$MCP_NLB_SG" "$$VPC_CIDR" "$$TETRAGON_EVENTS_TABLE" "$$EKS_AUDIT_LOG_GROUP" "$(REGION)" | $(KCTL) apply -f -
+		python3 -c 'from pathlib import Path; import sys; text=Path("kubernetes/mcp/eks-mcp-server.yaml").read_text(); repls={"$${MCP_IMAGE}": sys.argv[1], "$${FORENSICS_BUCKET}": sys.argv[2], "$${MCP_NLB_SECURITY_GROUP_ID}": sys.argv[3], "$${VPC_CIDR}": sys.argv[4], "$${TETRAGON_EVENTS_TABLE}": sys.argv[5], "$${EKS_AUDIT_LOG_GROUP}": sys.argv[6], "$${AWS_REGION}": sys.argv[7]}; [globals().__setitem__("text", text.replace(k, v)) for k, v in repls.items()]; print(text)' "$$MCP_IMAGE" "$$FORENSICS_BUCKET" "$$MCP_NLB_SG" "$$VPC_CIDR" "$$TETRAGON_EVENTS_TABLE" "$$EKS_AUDIT_LOG_GROUP" "$(REGION)" | $(KCTL) apply -f -
 	@$(KCTL) rollout status deployment/eks-mcp-server -n atdr --timeout=180s
 	@echo "Waiting for EKS MCP internal load balancer..."
 	@for i in 1 2 3 4 5 6 7 8 9 10 11 12; do \
 		MCP_HOST=$$($(KCTL) get svc eks-mcp-server -n atdr -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null); \
 		if [ -n "$$MCP_HOST" ]; then \
-			aws secretsmanager put-secret-value --secret-id atdr/mcp/server-url --secret-string "{\"url\":\"http://$$MCP_HOST/mcp\"}" --region $(REGION) --no-cli-pager >/dev/null; \
-			echo "  atdr/mcp/server-url: http://$$MCP_HOST/mcp"; \
+			aws secretsmanager put-secret-value --secret-id $(PROJECT)/mcp/server-url --secret-string "{\"url\":\"http://$$MCP_HOST/mcp\"}" --region $(REGION) --no-cli-pager >/dev/null; \
+			echo "  $(PROJECT)/mcp/server-url: http://$$MCP_HOST/mcp"; \
 			exit 0; \
 		fi; \
 		sleep 10; \
@@ -203,7 +209,7 @@ platform-down:
 	@echo "=== Removing platform components ==="
 	@echo "--- Removing CRD resources (while controllers still running) ---"
 	@python3 -c 'from pathlib import Path; import sys; text=Path("kubernetes/mcp/eks-mcp-server.yaml").read_text(); repls={"$${MCP_IMAGE}":"unused","$${FORENSICS_BUCKET}":"unused","$${MCP_NLB_SECURITY_GROUP_ID}":"unused","$${VPC_CIDR}":"10.0.0.0/16","$${TETRAGON_EVENTS_TABLE}":"unused","$${EKS_AUDIT_LOG_GROUP}":"unused","$${AWS_REGION}":"unused"};\nfor k,v in repls.items(): text=text.replace(k,v)\nprint(text)' | $(KCTL) delete -f - --ignore-not-found --timeout=30s 2>/dev/null || true
-	@python3 -c 'from pathlib import Path; import sys; print(Path("kubernetes/external-secrets/external-secrets.yaml").read_text().replace("$${AWS_REGION}", sys.argv[1]))' "$(REGION)" | $(KCTL) delete -f - --ignore-not-found --timeout=30s 2>/dev/null || true
+	@python3 -c 'from pathlib import Path; import sys; text=Path("kubernetes/external-secrets/external-secrets.yaml").read_text(); print(text.replace("$${AWS_REGION}", sys.argv[1]).replace("$${PROJECT}", sys.argv[2]))' "$(REGION)" "$(PROJECT)" | $(KCTL) delete -f - --ignore-not-found --timeout=30s 2>/dev/null || true
 	@$(KCTL) delete -f kubernetes/tetragon/tracing-policies.yaml --ignore-not-found --timeout=30s 2>/dev/null || true
 	@$(KCTL) delete -f kubernetes/admission-policies/policies.yaml --ignore-not-found --timeout=30s 2>/dev/null || true
 	@$(KCTL) delete -f kubernetes/monitoring/grafana-ingress.yaml --ignore-not-found --timeout=30s 2>/dev/null || true
@@ -233,33 +239,33 @@ deploy-lambdas: build-lambdas
 	@echo "Deploying Lambda functions..."
 	@for agent in summary triage solution remediation forensic_synthesis; do \
 		fn_suffix=$$(echo $$agent | tr '_' '-'); \
-		echo "  atdr-$$fn_suffix-agent"; \
+		echo "  $(PROJECT)-$$fn_suffix-agent"; \
 		aws lambda update-function-code \
-			--function-name atdr-$$fn_suffix-agent \
+			--function-name $(PROJECT)-$$fn_suffix-agent \
 			--zip-file fileb://$(LAMBDA_MOD)/$$agent.zip \
 			--region $(REGION) --no-cli-pager; \
 	done
 	@aws lambda update-function-code \
-		--function-name atdr-ingestor \
+		--function-name $(PROJECT)-ingestor \
 		--zip-file fileb://$(LAMBDA_MOD)/ingestor.zip \
 		--region $(REGION) --no-cli-pager
 	@aws lambda update-function-code \
-		--function-name atdr-degraded-notifier \
+		--function-name $(PROJECT)-degraded-notifier \
 		--zip-file fileb://$(LAMBDA_MOD)/degraded_notifier.zip \
 		--region $(REGION) --no-cli-pager
 	@aws lambda update-function-code \
-		--function-name atdr-approval-notifier \
+		--function-name $(PROJECT)-approval-notifier \
 		--zip-file fileb://$(LAMBDA_MOD)/approval_notifier.zip \
 		--region $(REGION) --no-cli-pager
 	@aws lambda update-function-code \
-		--function-name atdr-slack-bot \
+		--function-name $(PROJECT)-slack-bot \
 		--zip-file fileb://terraform/modules/slack/slack_bot.zip \
 		--region $(REGION) --no-cli-pager
 	@echo "Done."
 
 deploy-layer: build-layer
 	@aws lambda publish-layer-version \
-		--layer-name atdr-dependencies \
+		--layer-name $(PROJECT)-dependencies \
 		--zip-file fileb://$(LAMBDA_MOD)/layer.zip \
 		--compatible-runtimes python3.12 \
 		--region $(REGION) --no-cli-pager
@@ -285,13 +291,13 @@ create-opensearch-index:
 create-kb:
 	@COLLECTION_ARN=$$(cd $(TF_DIR) && terraform output -raw opensearch_collection_arn) && \
 		INDEX_NAME=$$(cd $(TF_DIR) && terraform output -raw opensearch_vector_index_name) && \
-		KB_ROLE_ARN=$$(aws iam get-role --role-name atdr-bedrock-kb --query 'Role.Arn' --output text --no-cli-pager) && \
+		KB_ROLE_ARN=$$(aws iam get-role --role-name $(PROJECT)-bedrock-kb --query 'Role.Arn' --output text --no-cli-pager) && \
 		RUNBOOKS_BUCKET_ARN=$$(cd $(TF_DIR) && terraform output -raw runbooks_bucket_id | xargs -I{} echo "arn:aws:s3:::{}") && \
-		KB_ID=$$(aws bedrock-agent list-knowledge-bases --region $(REGION) --query 'knowledgeBaseSummaries[?name==`atdr-runbooks-kb`].knowledgeBaseId | [0]' --output text --no-cli-pager) && \
+		KB_ID=$$(aws bedrock-agent list-knowledge-bases --region $(REGION) --query 'knowledgeBaseSummaries[?name==`$(PROJECT)-runbooks-kb`].knowledgeBaseId | [0]' --output text --no-cli-pager) && \
 		if [ "$$KB_ID" = "None" ] || [ -z "$$KB_ID" ]; then \
 			echo "Creating Knowledge Base..."; \
 			KB_ID=$$(aws bedrock-agent create-knowledge-base \
-				--name atdr-runbooks-kb \
+				--name $(PROJECT)-runbooks-kb \
 				--description "ATDR response runbooks indexed for Solution Agent RAG" \
 				--role-arn $$KB_ROLE_ARN \
 				--knowledge-base-configuration '{"type":"VECTOR","vectorKnowledgeBaseConfiguration":{"embeddingModelArn":"arn:aws:bedrock:$(REGION)::foundation-model/amazon.titan-embed-text-v2:0","embeddingModelConfiguration":{"bedrockEmbeddingModelConfiguration":{"dimensions":1024,"embeddingDataType":"FLOAT32"}}}}' \
@@ -307,12 +313,12 @@ create-kb:
 		else \
 			echo "Knowledge Base already exists: $$KB_ID"; \
 		fi && \
-		DS_ID=$$(aws bedrock-agent list-data-sources --knowledge-base-id $$KB_ID --region $(REGION) --query 'dataSourceSummaries[?name==`atdr-runbooks`].dataSourceId | [0]' --output text --no-cli-pager) && \
+		DS_ID=$$(aws bedrock-agent list-data-sources --knowledge-base-id $$KB_ID --region $(REGION) --query 'dataSourceSummaries[?name==`$(PROJECT)-runbooks`].dataSourceId | [0]' --output text --no-cli-pager) && \
 		if [ "$$DS_ID" = "None" ] || [ -z "$$DS_ID" ]; then \
 			echo "Creating Data Source..."; \
 			DS_ID=$$(aws bedrock-agent create-data-source \
 				--knowledge-base-id $$KB_ID \
-				--name atdr-runbooks \
+				--name $(PROJECT)-runbooks \
 				--description "Markdown runbooks stored in S3" \
 				--data-source-configuration "{\"type\":\"S3\",\"s3Configuration\":{\"bucketArn\":\"$$RUNBOOKS_BUCKET_ARN\",\"inclusionPrefixes\":[\"runbooks/\"]}}" \
 				--vector-ingestion-configuration '{"chunkingConfiguration":{"chunkingStrategy":"FIXED_SIZE","fixedSizeChunkingConfiguration":{"maxTokens":300,"overlapPercentage":20}}}' \
@@ -328,13 +334,13 @@ create-kb:
 		echo "Knowledge Base ready: $$KB_ID (data source: $$DS_ID)"
 
 kb-sync:
-	@KB_ID=$$(aws bedrock-agent list-knowledge-bases --region $(REGION) --query 'knowledgeBaseSummaries[?name==`atdr-runbooks-kb`].knowledgeBaseId | [0]' --output text --no-cli-pager) && \
-		DS_ID=$$(aws bedrock-agent list-data-sources --knowledge-base-id $$KB_ID --region $(REGION) --query 'dataSourceSummaries[?name==`atdr-runbooks`].dataSourceId | [0]' --output text --no-cli-pager) && \
+	@KB_ID=$$(aws bedrock-agent list-knowledge-bases --region $(REGION) --query 'knowledgeBaseSummaries[?name==`$(PROJECT)-runbooks-kb`].knowledgeBaseId | [0]' --output text --no-cli-pager) && \
+		DS_ID=$$(aws bedrock-agent list-data-sources --knowledge-base-id $$KB_ID --region $(REGION) --query 'dataSourceSummaries[?name==`$(PROJECT)-runbooks`].dataSourceId | [0]' --output text --no-cli-pager) && \
 		aws bedrock-agent start-ingestion-job \
 			--knowledge-base-id $$KB_ID \
 			--data-source-id $$DS_ID \
-			--region $(REGION) --no-cli-pager >/tmp/atdr-kb-ingestion.json && \
-		JOB_ID=$$(python3 -c 'import json; print(json.load(open("/tmp/atdr-kb-ingestion.json"))["ingestionJob"]["ingestionJobId"])') && \
+			--region $(REGION) --no-cli-pager >/tmp/$(PROJECT)-kb-ingestion.json && \
+		JOB_ID=$$(python3 -c 'import json; print(json.load(open("/tmp/$(PROJECT)-kb-ingestion.json"))["ingestionJob"]["ingestionJobId"])') && \
 		for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do \
 			STATUS=$$(aws bedrock-agent get-ingestion-job --knowledge-base-id $$KB_ID --data-source-id $$DS_ID --ingestion-job-id $$JOB_ID --region $(REGION) --query 'ingestionJob.status' --output text --no-cli-pager); \
 			echo "Knowledge Base ingestion $$JOB_ID: $$STATUS"; \
@@ -360,23 +366,23 @@ secrets:
 	@read -p "Slack Bot Token (xoxb-...): " token && \
 		read -p "Slack Webhook URL: " webhook && \
 		aws secretsmanager put-secret-value \
-			--secret-id atdr/slack/bot-token \
+			--secret-id $(PROJECT)/slack/bot-token \
 			--secret-string "{\"token\":\"$$token\",\"webhook_url\":\"$$webhook\"}" \
 			--region $(REGION) --no-cli-pager && \
-		echo "  atdr/slack/bot-token: done"
+		echo "  $(PROJECT)/slack/bot-token: done"
 	@read -p "Slack Signing Secret: " secret && \
 		aws secretsmanager put-secret-value \
-			--secret-id atdr/slack/signing-secret \
+			--secret-id $(PROJECT)/slack/signing-secret \
 			--secret-string "{\"secret\":\"$$secret\"}" \
 			--region $(REGION) --no-cli-pager && \
-		echo "  atdr/slack/signing-secret: done"
+		echo "  $(PROJECT)/slack/signing-secret: done"
 	@read -p "MCP Auth Token (required): " mcp_token && \
 		if [ -z "$$mcp_token" ]; then echo "ERROR: MCP Auth Token is required"; exit 1; fi && \
 		aws secretsmanager put-secret-value \
-			--secret-id atdr/mcp/auth-token \
+			--secret-id $(PROJECT)/mcp/auth-token \
 			--secret-string "{\"token\":\"$$mcp_token\"}" \
 			--region $(REGION) --no-cli-pager && \
-		echo "  atdr/mcp/auth-token: done"
+		echo "  $(PROJECT)/mcp/auth-token: done"
 	@echo "=== Secrets configured ==="
 
 ## ─── Scaling ─────────────────────────────────────────────────────
@@ -517,12 +523,12 @@ status:
 
 backup-db:
 	@aws dynamodb create-backup \
-		--table-name atdr-incidents \
-		--backup-name "atdr-incidents-$$(date +%Y%m%d-%H%M%S)" \
+		--table-name $(PROJECT)-incidents \
+		--backup-name "$(PROJECT)-incidents-$$(date +%Y%m%d-%H%M%S)" \
 		--region $(REGION) 2>/dev/null && echo "incidents: done" || echo "incidents: skipped"
 	@aws dynamodb create-backup \
-		--table-name atdr-approval-audit \
-		--backup-name "atdr-approval-audit-$$(date +%Y%m%d-%H%M%S)" \
+		--table-name $(PROJECT)-approval-audit \
+		--backup-name "$(PROJECT)-approval-audit-$$(date +%Y%m%d-%H%M%S)" \
 		--region $(REGION) 2>/dev/null && echo "approval-audit: done" || echo "approval-audit: skipped"
 
 clean:

@@ -6,6 +6,10 @@ output "region" {
   value = var.region
 }
 
+output "project_name" {
+  value = var.project_name
+}
+
 output "vpc_id" {
   value = module.vpc.vpc_id
 }

@@ -5,14 +5,15 @@ COPY mcp_server/requirements.txt .
 RUN pip install --target /opt/python -r requirements.txt
 
 COPY mcp_server/proto /opt/build/proto
-RUN PYTHONPATH=/opt/python python -m grpc_tools.protoc \
+RUN mkdir -p /opt/generated \
+    && PYTHONPATH=/opt/python python -m grpc_tools.protoc \
         -I /opt/build/proto \
         --python_out=/opt/generated \
         --grpc_python_out=/opt/generated \
         /opt/build/proto/flow/flow.proto \
         /opt/build/proto/relay/relay.proto \
         /opt/build/proto/observer/observer.proto \
-    && find /opt/generated -type d -exec touch {}/__init__.py \;
+    && python -c 'from pathlib import Path; [p.joinpath("__init__.py").touch() for p in Path("/opt/generated").rglob("*") if p.is_dir()]'
 
 FROM python:3.12-slim
 
